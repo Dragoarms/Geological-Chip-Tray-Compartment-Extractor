@@ -16,7 +16,11 @@ Features:
 Author: George Symonds - (using Claude Sonnet 3.7)
 
 """
+__version__ = "1.1" 
 
+import certifi
+print(certifi.where())
+import ssl 
 import os
 import sys
 import logging
@@ -34,10 +38,12 @@ from datetime import datetime
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union, Callable, Set
+import urllib.request
+import tempfile
 
 # Configure logging first
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -74,6 +80,204 @@ except ImportError:
             return base + specific
 
     print(_TesseractImportHelper.get_installation_instructions())
+
+class UpdateChecker:
+    """
+    Checks for updates to the application by comparing local version with GitHub version.
+    """
+    
+    def __init__(self, github_repo="https://github.com/Dragoarms/Geological-Chip-Tray-Compartment-Extractor.git", token=None):
+        """
+        Initialize the update checker.
+        
+        Args:
+            github_repo: URL to the GitHub repository
+            token: GitHub personal access token for private repositories
+        """
+        self.github_repo = github_repo
+        self.token = token  # Store the token for authentication
+        self.logger = logging.getLogger(__name__)
+        
+        # Extract owner and repo name from the URL
+        match = re.search(r'github\.com/([^/]+)/([^/.]+)', github_repo)
+        if match:
+            self.owner = match.group(1)
+            self.repo = match.group(2)
+            self.logger.info(f"Parsed GitHub repo: owner={self.owner}, repo={self.repo}")
+        else:
+            self.owner = None
+            self.repo = None
+            self.logger.error(f"Could not parse GitHub repository URL: {github_repo}")
+    
+    def get_local_version(self) -> str:
+        """
+        Get the local version from the script's __version__ variable.
+        
+        Returns:
+            Local version as a string
+        """
+        try:
+            # Check for __version__ in main module
+            import __main__
+            if hasattr(__main__, '__version__'):
+                return __main__.__version__
+                
+            # If not found in main, use the global __version__ if available
+            if '__version__' in globals():
+                return globals()['__version__']
+                
+            # Fallback to hardcoded version
+            return "1.0"  # Default fallback version
+                
+        except Exception as e:
+            self.logger.error(f"Error getting local version: {str(e)}")
+            return "1.0"  # Default fallback version
+    
+    def get_github_version(self) -> str:
+        """
+        Get the latest version from GitHub.
+        
+        Returns:
+            Latest version as a string, or "Unknown" if not found
+        """
+        try:
+            if not self.owner or not self.repo:
+                return "Unknown"
+                
+            # Try location for the version information
+            possible_paths = [
+                f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/version.txt",
+            ]
+            
+            # Create a context that doesn't verify SSL certificates
+            context = ssl._create_unverified_context()
+            
+            # Try each path
+            for raw_url in possible_paths:
+                try:
+                    self.logger.info(f"Trying URL: {raw_url}")
+                    
+                    # Create a request object
+                    request = urllib.request.Request(raw_url)
+                    
+                    # Add authorization header if token is provided
+                    if self.token:
+                        request.add_header("Authorization", f"token {self.token}")
+                    
+                    # Make the request
+                    response = urllib.request.urlopen(request, context=context)
+                    content = response.read().decode('utf-8')
+                    
+                    # Parse version using regex
+                    match = re.search(r'[Vv]ersion\s*=\s*["\']*(\d+\.\d+(?:\.\d+)?)["\']*', content)
+                    if match:
+                        return match.group(1)
+                except Exception as path_error:
+                    self.logger.warning(f"Failed with path {raw_url}: {str(path_error)}")
+                    continue
+            
+            # If all paths fail, try parsing version directly from repository URL
+            # Format like "V2.py" suggests version 2.0
+            match = re.search(r'V(\d+)\.py', self.github_repo)
+            if match:
+                return f"{match.group(1)}.0"
+                
+            # Last resort - use current version
+            return self.get_local_version()
+        except Exception as e:
+            self.logger.error(f"Error getting GitHub version: {str(e)}")
+            return "Unknown"
+
+    def compare_versions(self) -> dict:
+        """
+        Compare local and GitHub versions.
+
+        Returns:
+            Dictionary with comparison results
+        """
+        local_version = self.get_local_version()
+        github_version = self.get_github_version()
+
+        result = {
+            'local_version': local_version,
+            'github_version': github_version,
+            'update_available': False,
+            'error': None
+        }
+
+        if local_version == "Unknown" or github_version == "Unknown":
+            result['error'] = "Could not determine versions"
+            return result
+
+        try:
+            # Convert to tuples of integers for comparison
+            local_parts = tuple(map(int, local_version.split('.')))
+            github_parts = tuple(map(int, github_version.split('.')))
+
+            # Pad with zeros if versions have different number of parts
+            max_length = max(len(local_parts), len(github_parts))
+            local_parts = local_parts + (0,) * (max_length - len(local_parts))
+            github_parts = github_parts + (0,) * (max_length - len(github_parts))
+
+            result['update_available'] = github_parts > local_parts
+
+            return result
+        except Exception as e:
+            result['error'] = str(e)
+            self.logger.error(f"Error comparing versions: {str(e)}")
+            return result
+
+    def download_and_replace_script(self, file_manager, script_name="Chip Tray Photo Processor.py"):
+        """
+        Downloads the updated script from GitHub, replaces the current file, and restarts.
+
+        Args:
+            file_manager: Instance of FileManager that provides the base directory
+            script_name: The filename to fetch from GitHub and run
+        """
+        try:
+            import sys
+            import subprocess
+            import tempfile
+
+            # Target directory in Program Resources
+            program_dir = os.path.join(file_manager.base_dir, "Program Resources")
+            os.makedirs(program_dir, exist_ok=True)
+
+            # Remote raw GitHub URL
+            raw_url = f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/{script_name.replace(' ', '%20')}"
+            target_path = os.path.join(program_dir, script_name)
+
+            # Download to a temporary file first
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".py")
+            os.close(tmp_fd)
+
+            context = ssl._create_unverified_context()
+
+            with urllib.request.urlopen(raw_url, context=context) as response, open(tmp_path, 'wb') as out_file:
+                shutil.copyfileobj(response, out_file)
+
+            # Move updated file to Program Resources
+            shutil.move(tmp_path, target_path)
+            self.logger.info(f"✅ Downloaded updated script to: {target_path}")
+
+            # Remove current running script
+            current_script = os.path.abspath(sys.argv[0])
+            self.logger.info(f"🧹 Deleting current script: {current_script}")
+            try:
+                os.remove(current_script)
+            except Exception as delete_error:
+                self.logger.warning(f"⚠️ Could not delete original script: {delete_error}")
+
+            # Restart from new script
+            self.logger.info("🔁 Restarting from updated script...")
+            subprocess.Popen([sys.executable, target_path])
+            sys.exit(0)
+
+        except Exception as e:
+            self.logger.error(f"❌ Update failed: {e}")
+            messagebox.showerror("Update Failed", f"An error occurred while updating:\n{e}")
+
 
 class TesseractManager:
     """
@@ -3193,6 +3397,7 @@ class ChipTrayExtractor:
 
     def __init__(self):
         """Initialize the chip tray extractor with default settings."""
+        self.logger = getattr(self, 'logger', logging.getLogger(__name__))
         self.progress_queue = queue.Queue()
         self.processing_complete = False
         self.root = None
@@ -3211,6 +3416,9 @@ class ChipTrayExtractor:
         # that is only known when processing an actual image
         self.duplicate_handler = None  # Will be initialized as needed
         
+        # Initialize UpdateChecker
+        self.update_checker = UpdateChecker()
+
         # Configuration settings (these can be modified via the GUI)
         self.config = {
             # Output settings
@@ -5335,6 +5543,59 @@ class ChipTrayExtractor:
         
         # Add initial status message
         self.update_status("Ready. Select a folder and click 'Process Photos'.", "info")
+
+        # After setting up all your existing UI components, add a menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Browse Folder...", command=self.browse_folder)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit_app)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Check for Updates", command=self.on_check_for_updates)
+        help_menu.add_command(label="About", command=self._show_about_dialog)
+        
+        # Check for updates at startup if enabled
+        if self.config.get('check_for_updates', True):
+            # Schedule update check after GUI is fully loaded
+            self.root.after(2000, self._check_updates_at_startup)
+
+
+    def on_check_for_updates(self):
+        self.update_checker.check_for_updates(parent=self.root)
+
+    # Add helper methods for the About dialog and startup update check
+    def _show_about_dialog(self):
+        """Show information about the application."""
+        version = self.update_checker.get_local_version() if hasattr(self, 'update_checker') else "Unknown"
+        
+        about_text = (
+            f"Chip Tray Extractor v{version}\n\n"
+            "A tool to extract individual compartment images from\n"
+            "panoramic chip tray photos using ArUco markers.\n\n"
+            "Author: George Symonds\n"
+            "GitHub: https://github.com/Dragoarms/Geological-Chip-Tray-Compartment-Extractor"
+        )
+        
+        messagebox.showinfo("About Chip Tray Extractor", about_text, parent=self.root)
+
+    def _check_updates_at_startup(self):
+        """Check for updates at startup without showing dialogs for up-to-date case."""
+        if not hasattr(self, 'update_checker'):
+            return
+            
+        try:
+            result = self.update_checker.compare_versions()
+
+            if result["update_available"]:
+                if messagebox.askyesno("Update Available", f"A new version is available:\n{result['github_version']}.\n\nDownload and restart?"):
+                    self.update_checker.download_and_replace_script(self.file_manager)
 
     def _create_onedrive_path_field(self, parent, label_text, string_var):
             """Create a field for OneDrive path input with browse button."""
@@ -8184,8 +8445,10 @@ class FileManager:
     Manages file operations for the Chip Tray Extractor.
     
     Handles directory creation, file naming conventions, and saving operations.
-    
-    
+
+    C:\\Excel Automation Local Outputs\\Chip Tray Photo Processor\\
+    ├── Program Resources
+
         C:\\Excel Automation Local Outputs\\Chip Tray Photo Processor\\Processed\
     ├── Blur Analysis\\[HoleID]\
     ├── Chip Compartments\\[HoleID]\\With Assays
