@@ -4904,7 +4904,7 @@ class ChipTrayExtractor:
                         self.progress_queue.put(("Extracting high-resolution compartments...", None))
                         
                     compartments, compartments_viz = self.extract_compartments(original_image, compartment_boundaries)
-                    
+
                     # Add QAQC review process here
                     if hasattr(self, 'root') and self.root is not None:
                         # Create QAQC manager if it doesn't exist
@@ -4925,13 +4925,25 @@ class ChipTrayExtractor:
                         
                         # Skip standard saving since QAQC system will handle it
                         return True
-                    
+
                     # Fallback to standard saving if we don't have a GUI
                     # Save the extracted compartments using the FileManager
                     if hasattr(self, 'progress_queue'):
                         self.progress_queue.put(("Saving compartment images...", None))
 
-
+                    # Save the compartments and get the count of saved images
+                    num_saved = 0
+                    try:
+                        # Use the FileManager to save compartments
+                        num_saved = self.save_compartments(
+                            compartments,
+                            self.file_manager.processed_dir,  # Use FileManager's directory
+                            os.path.basename(image_path),
+                            metadata
+                        )
+                    except Exception as e:
+                        logger.error(f"Error saving compartments: {str(e)}")
+                        logger.error(traceback.format_exc())
                     # Create and save visualization image if required
                     if self.config['save_debug_images']:
                         if hasattr(self, 'progress_queue'):
@@ -5689,12 +5701,71 @@ class ChipTrayExtractor:
         if self.config.get('check_for_updates', True):
             # Schedule update check after GUI is fully loaded
             self.root.after(2000, self._check_updates_at_startup)
+       
+        # Progress bar
+        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding=10)
+        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
+                                        orient=tk.HORIZONTAL, length=100, mode='determinate')
+        self.progress_bar.pack(fill=tk.X)
+        
+        # Status text - enlarged and improved for better visibility
+        status_frame = ttk.LabelFrame(main_frame, text="Detailed Status", padding=10)
+        status_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Add a text widget with scrollbar
+        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 10))
+        self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(status_frame, command=self.status_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.status_text.config(yscrollcommand=scrollbar.set)
+        self.status_text.config(state=tk.DISABLED)
+        
+        # Add text tags for different status types (error, warning, success)
+        self.status_text.tag_configure("error", foreground="red")
+        self.status_text.tag_configure("warning", foreground="orange")
+        self.status_text.tag_configure("success", foreground="green")
+        self.status_text.tag_configure("info", foreground="blue")
+        
+        # Action buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 5))
+
+        
+        control_frame = ttk.Frame(self.root, padding="10")
+        control_frame.pack(fill=tk.X, pady=5)
+
+        # Generate Drillhole Trace
+        self.trace_button = ttk.Button(
+            control_frame,
+            text="Generate Drillhole Trace",
+            command=self.on_generate_trace
+        )
+        self.trace_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        
+        self.process_button = ttk.Button(button_frame, text="Process Photos", 
+                                    command=self.start_processing)
+        self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        quit_button = ttk.Button(button_frame, text="Quit", command=self.quit_app)
+        quit_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
+        
+        
+        # Set up a timer to check for progress updates
+        self.root.after(100, self.check_progress)
+        
+        # Add initial status message
+        self.update_status("Ready. Select a folder and click 'Process Photos'.", "info")
 
 
     def on_check_for_updates(self):
         self.update_checker.check_for_updates(parent=self.root)
 
-    # Add helper methods for the About dialog and startup update check
     def _show_about_dialog(self):
         """Show information about the application."""
         version = self.update_checker.get_local_version() if hasattr(self, 'update_checker') else "Unknown"
@@ -6025,8 +6096,6 @@ class ChipTrayExtractor:
             command=dialog.destroy
         )
         ok_button.pack(side=tk.RIGHT)
-
-    
     
     def _select_calibration_images(self, path_var):
         """
@@ -6046,66 +6115,6 @@ class ChipTrayExtractor:
         if file_paths:
             # Join paths with semicolons for display
             path_var.set(';'.join(file_paths))
-
-        # Progress bar
-        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding=10)
-        progress_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
-                                        orient=tk.HORIZONTAL, length=100, mode='determinate')
-        self.progress_bar.pack(fill=tk.X)
-        
-        # Status text - enlarged and improved for better visibility
-        status_frame = ttk.LabelFrame(main_frame, text="Detailed Status", padding=10)
-        status_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # Add a text widget with scrollbar
-        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 10))
-        self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scrollbar = ttk.Scrollbar(status_frame, command=self.status_text.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.status_text.config(yscrollcommand=scrollbar.set)
-        self.status_text.config(state=tk.DISABLED)
-        
-        # Add text tags for different status types (error, warning, success)
-        self.status_text.tag_configure("error", foreground="red")
-        self.status_text.tag_configure("warning", foreground="orange")
-        self.status_text.tag_configure("success", foreground="green")
-        self.status_text.tag_configure("info", foreground="blue")
-        
-        # Action buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 5))
-
-        
-        control_frame = ttk.Frame(self.root, padding="10")
-        control_frame.pack(fill=tk.X, pady=5)
-
-        # Generate Drillhole Trace
-        self.trace_button = ttk.Button(
-            control_frame,
-            text="Generate Drillhole Trace",
-            command=self.on_generate_trace
-        )
-        self.trace_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        
-        self.process_button = ttk.Button(button_frame, text="Process Photos", 
-                                    command=self.start_processing)
-        self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        quit_button = ttk.Button(button_frame, text="Quit", command=self.quit_app)
-        quit_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
-        
-        
-        # Set up a timer to check for progress updates
-        self.root.after(100, self.check_progress)
-        
-        # Add initial status message
-        self.update_status("Ready. Select a folder and click 'Process Photos'.", "info")
 
     
     
