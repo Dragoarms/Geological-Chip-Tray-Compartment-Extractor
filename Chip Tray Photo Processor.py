@@ -5579,7 +5579,7 @@ class ChipTrayExtractor:
             f"Chip Tray Extractor v{version}\n\n"
             "A tool to extract individual compartment images from\n"
             "panoramic chip tray photos using ArUco markers.\n\n"
-            "Author: George Symonds\n"
+            "Copyright (c) 2025 George Symonds\n"
             "GitHub: https://github.com/Dragoarms/Geological-Chip-Tray-Compartment-Extractor"
         )
         
@@ -5589,13 +5589,19 @@ class ChipTrayExtractor:
         """Check for updates at startup without showing dialogs for up-to-date case."""
         if not hasattr(self, 'update_checker'):
             return
-            
+
         try:
             result = self.update_checker.compare_versions()
 
             if result["update_available"]:
-                if messagebox.askyesno("Update Available", f"A new version is available:\n{result['github_version']}.\n\nDownload and restart?"):
+                if messagebox.askyesno(
+                    "Update Available",
+                    f"A new version is available:\n{result['github_version']}.\n\nDownload and restart?"
+                ):
                     self.update_checker.download_and_replace_script(self.file_manager)
+
+        except Exception as e:
+            self.logger.error(f"Error checking for updates on startup: {e}")
 
     def _create_onedrive_path_field(self, parent, label_text, string_var):
             """Create a field for OneDrive path input with browse button."""
