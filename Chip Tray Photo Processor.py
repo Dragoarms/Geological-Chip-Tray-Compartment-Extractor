@@ -259,23 +259,23 @@ class UpdateChecker:
 
             # Move updated file to Program Resources
             shutil.move(tmp_path, target_path)
-            self.logger.info(f"✅ Downloaded updated script to: {target_path}")
+            self.logger.info(f"Downloaded updated script to: {target_path}")
 
             # Remove current running script
-            current_script = os.path.abspath(sys.argv[0])
-            self.logger.info(f"🧹 Deleting current script: {current_script}")
-            try:
-                os.remove(current_script)
-            except Exception as delete_error:
-                self.logger.warning(f"⚠️ Could not delete original script: {delete_error}")
+            #current_script = os.path.abspath(sys.argv[0])
+            #self.logger.info(f" Deleting current script: {current_script}")
+            #try:
+            #    os.remove(current_script)
+            #except Exception as delete_error:
+            #    self.logger.warning(f" Could not delete original script: {delete_error}")
 
             # Restart from new script
-            self.logger.info("🔁 Restarting from updated script...")
+            self.logger.info(" Restarting from updated script...")
             subprocess.Popen([sys.executable, target_path])
             sys.exit(0)
 
         except Exception as e:
-            self.logger.error(f"❌ Update failed: {e}")
+            self.logger.error(f"Update failed: {e}")
             messagebox.showerror("Update Failed", f"An error occurred while updating:\n{e}")
 
 
@@ -1636,33 +1636,61 @@ class QAQCManager:
         )
         self.progress_label.pack(pady=5)
         
-        # Compartment frame
-        self.compartment_frame = ttk.Frame(main_frame)
+        # Compartment frame - add a canvas for scrolling if needed
+        self.compartment_container = ttk.Frame(main_frame)
+        self.compartment_container.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.compartment_frame = ttk.Frame(self.compartment_container)
         self.compartment_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        # Status frame
+        # Status buttons frame
         status_frame = ttk.LabelFrame(main_frame, text="Compartment Status", padding=10)
         status_frame.pack(fill=tk.X, pady=10)
         
-        # Status radio buttons
-        self.status_var = tk.StringVar(value=self.STATUS_OK)
+        # Status buttons - using colored buttons instead of radio buttons
+        status_button_frame = ttk.Frame(status_frame)
+        status_button_frame.pack(fill=tk.X, pady=5)
         
-        status_options = [
-            (self.STATUS_OK, "OK - Good quality image"),
-            (self.STATUS_BLURRY, "Blurry - Image is not clear"),
-            (self.STATUS_DAMAGED, "Damaged - Physical damage visible"),
-            (self.STATUS_MISSING, "Missing - No compartment available")
-        ]
+        # Create colored status buttons
+        ok_button = tk.Button(
+            status_button_frame,
+            text="OK",
+            background="green",
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=lambda: self._set_status_and_next(self.STATUS_OK)
+        )
+        ok_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         
-        for status, text in status_options:
-            radio = ttk.Radiobutton(
-                status_frame,
-                text=text,
-                value=status,
-                variable=self.status_var,
-                command=self._on_status_change
-            )
-            radio.pack(anchor='w', pady=2)
+        blurry_button = tk.Button(
+            status_button_frame,
+            text="BLURRY",
+            background="#ffcccc",  # Pale red
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=lambda: self._set_status_and_next(self.STATUS_BLURRY)
+        )
+        blurry_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        
+        damaged_button = tk.Button(
+            status_button_frame,
+            text="DAMAGED",
+            background="orange",
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=lambda: self._set_status_and_next(self.STATUS_DAMAGED)
+        )
+        damaged_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        
+        missing_button = tk.Button(
+            status_button_frame,
+            text="MISSING",
+            background="black",
+            foreground="white",
+            font=("Arial", 12, "bold"),
+            command=lambda: self._set_status_and_next(self.STATUS_MISSING)
+        )
+        missing_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         
         # Navigation buttons frame
         nav_frame = ttk.Frame(main_frame)
@@ -1695,8 +1723,7 @@ class QAQCManager:
             background="green",
             foreground="white",
             font=("Arial", 14, "bold"),
-            command=self._on_approve,
-            state=tk.DISABLED  # Initially disabled until all compartments reviewed
+            command=self._on_approve
         )
         self.approve_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=10)
         
@@ -1711,6 +1738,22 @@ class QAQCManager:
         )
         reject_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=5, pady=10)
     
+    def _set_status_and_next(self, status):
+        """Set the status for the current compartment and move to the next one."""
+        # Save current status
+        self.current_tray['compartment_statuses'][self.current_compartment_index] = status
+        
+        # Check if we have more compartments to review
+        if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
+            # Move to next compartment
+            self.current_compartment_index += 1
+            self._show_current_compartment()
+        else:
+            # We've reached the last compartment, enable approve button
+            self.approve_button.config(state=tk.NORMAL)
+            # Optionally show a message
+            messagebox.showinfo("Review Complete", "All compartments have been reviewed. You can now approve or reject all.")
+
     def _show_current_compartment(self):
         """Display the current compartment for review."""
         # Clear previous compartment display
@@ -1722,12 +1765,6 @@ class QAQCManager:
         self.progress_label.config(
             text=f"Compartment {self.current_compartment_index + 1} of {total_compartments}"
         )
-        
-        # Update status variable
-        current_status = self.current_tray['compartment_statuses'].get(
-            self.current_compartment_index, self.STATUS_OK
-        )
-        self.status_var.set(current_status)
         
         # Update navigation buttons
         self.prev_button.config(state=tk.NORMAL if self.current_compartment_index > 0 else tk.DISABLED)
@@ -1752,60 +1789,73 @@ class QAQCManager:
             font=("Arial", 14, "bold")
         ).pack(pady=(0, 10))
         
-        # Image display frame
+        # Get current status
+        current_status = self.current_tray['compartment_statuses'].get(
+            self.current_compartment_index, self.STATUS_OK
+        )
+        
+        # Image display frame - updated to handle different layouts
         if existing_image:
-            # Show side-by-side display
+            # Two-column layout for comparison
             image_frame = ttk.Frame(self.compartment_frame)
             image_frame.pack(fill=tk.BOTH, expand=True)
             
-            # Original image column
-            orig_col = ttk.Frame(image_frame)
-            orig_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+            # Left column - existing image
+            left_frame = ttk.Frame(image_frame)
+            left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
             
             ttk.Label(
-                orig_col,
-                text="Existing Image",
+                left_frame,
+                text="Existing Image:",
                 font=("Arial", 12, "bold")
             ).pack(pady=(0, 5))
             
-            # Load and display existing image
-            existing_img = self._load_image_for_display(existing_image, max_size=(400, 400))
+            existing_img = self._load_image_for_display(existing_image, max_size=(400, 500))
             if existing_img:
-                ttk.Label(orig_col, image=existing_img).pack(pady=5)
+                ttk.Label(left_frame, image=existing_img).pack(pady=5)
                 
-            # Keep original option
+            # Add "Keep Original" checkbox
             self.keep_original_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(
-                orig_col,
+                left_frame,
                 text="Keep Original Image",
                 variable=self.keep_original_var
             ).pack(pady=10)
             
-            # New image column
-            new_col = ttk.Frame(image_frame)
-            new_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
+            # Right column - new image
+            right_frame = ttk.Frame(image_frame)
+            right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
             
             ttk.Label(
-                new_col,
-                text="New Image",
+                right_frame,
+                text="New Image:",
                 font=("Arial", 12, "bold")
             ).pack(pady=(0, 5))
             
-            # Load and display new image
             if self.current_compartment_index < len(self.current_tray['temp_paths']):
                 new_path = self.current_tray['temp_paths'][self.current_compartment_index]
-                new_img = self._load_image_for_display(new_path, max_size=(400, 400))
+                new_img = self._load_image_for_display(new_path, max_size=(400, 500))
                 if new_img:
-                    ttk.Label(new_col, image=new_img).pack(pady=5)
+                    ttk.Label(right_frame, image=new_img).pack(pady=5)
         else:
-            # Only show new image
-            # Load and display the compartment image
+            # Single column for new image only
             if self.current_compartment_index < len(self.current_tray['temp_paths']):
                 new_path = self.current_tray['temp_paths'][self.current_compartment_index]
                 new_img = self._load_image_for_display(new_path, max_size=(600, 600))
                 if new_img:
                     ttk.Label(self.compartment_frame, image=new_img).pack(pady=5)
-    
+        
+        # Resize the window based on content size
+        self.review_window.update_idletasks()  # Make sure layout is updated
+        width = min(1200, max(1000, self.compartment_frame.winfo_reqwidth() + 40))
+        height = min(900, max(800, self.compartment_frame.winfo_reqheight() + 300))  # Add space for buttons
+        self.review_window.geometry(f"{width}x{height}")
+        
+        # Update window title with current compartment info
+        self.review_window.title(
+            f"Review: {self.current_tray['hole_id']} {int(comp_depth_from)}-{int(comp_depth_to)}m ({self.current_compartment_index+1}/{total_compartments})"
+        )
+
     def _load_image_for_display(self, path, max_size=(400, 400)):
         """Load an image and resize it for display."""
         try:
@@ -1947,12 +1997,19 @@ class QAQCManager:
             self.logger.error(f"Error during rejection: {str(e)}")
             messagebox.showerror("Error", f"An error occurred during rejection: {str(e)}")
     
+    # TODO - check if this is the best way to do this - Aren't the compartments saved into the Temp_Review folder and moved out of that when they are approved / given statuses?
     def _on_review_window_close(self):
         """Handle review window close event."""
-        if messagebox.askyesno("Confirm", "Are you sure you want to exit the review process? "
-                             "All remaining trays will be skipped."):
-            self.review_window.destroy()
-            self.pending_trays = []
+        if messagebox.askyesno("Pause Review", "Do you want to pause the review process?\n\n"
+                            "You can resume it later by clicking 'Review Extracted Images'."):
+            # Just hide the window instead of destroying it
+            self.review_window.withdraw()
+        else:
+            # If they don't want to pause, ask if they want to exit completely
+            if messagebox.askyesno("Confirm Exit", "Are you sure you want to exit the review process?\n\n"
+                                "All progress will be lost and remaining trays will be skipped."):
+                self.review_window.destroy()
+                self.pending_trays = []
     
     def _save_approved_compartments(self):
         """Save the approved compartment images using FileManager."""
@@ -2533,7 +2590,7 @@ class OneDrivePathManager:
             return None
                 
         # Found it or selected it!
-        self._processed_originals_path = processed_folder
+        processed_folder = self._processed_originals_path
         self.logger.info(f"Found/selected OneDrive Processed Originals folder: {processed_folder}")
         return processed_folder
 
@@ -2605,7 +2662,7 @@ class OneDrivePathManager:
         
     def get_approved_folder_path(self) -> Optional[str]:
         """
-        Get the path to the approved folder in OneDrive.
+        Get the path to the approved images folder in OneDrive.
         
         Returns:
             Path to the approved folder, or None if not found
@@ -2805,8 +2862,11 @@ class DuplicateHandler:
         Returns:
             bool or Dict: True if processing should continue (replace),
                         False if processing should be skipped,
-                        or a dictionary with modified metadata
+                        or a dictionary with modified metadata or selective replacement flag
         """
+        # Store original path for potential QAQC processing
+        self._current_image_path = full_filename
+        
         # Reload existing entries to ensure we have the latest data
         self.processed_entries = self._load_existing_entries()
         
@@ -2914,7 +2974,7 @@ class DuplicateHandler:
                         self.missing_compartments = missing_compartments
                         self.logger.info(f"Found partial match: {len(existing_compartments)} existing compartments, {len(missing_compartments)} missing")
                         
-                        # Return True but store partial info for QAQC to handle
+                        # Store partial info for QAQC to handle
                         if hasattr(self, 'parent') and hasattr(self.parent, 'visualization_cache'):
                             self.parent.visualization_cache['partial_duplicate_info'] = {
                                 'existing_compartments': existing_compartments,
@@ -2927,7 +2987,7 @@ class DuplicateHandler:
             self.logger.error(f"Error checking compartment directory: {str(e)}")
         
         # Log additional info about existing files
-        if self.duplicate_files:  # Use self.duplicate_files instead of duplicate_files
+        if self.duplicate_files:
             self.logger.info(f"Found {len(self.duplicate_files)} duplicate files")
             # Limit the number of files logged to avoid overwhelming the log
             for file in self.duplicate_files[:5]:  # Log up to 5 files
@@ -2945,6 +3005,32 @@ class DuplicateHandler:
                 small_image, 
                 existing_debug_image
             )
+            
+            # Handle selective replacement
+            if isinstance(result, dict) and result.get('selective_replacement', False):
+                # If user chose to selectively replace compartments, start the QAQC process
+                if hasattr(self, 'parent') and hasattr(self.parent, 'qaqc_manager'):
+                    # Get the tray data from the result
+                    tray_data = {
+                        'hole_id': result['hole_id'],
+                        'depth_from': result['depth_from'],
+                        'depth_to': result['depth_to'],
+                        'original_path': result['original_path']
+                    }
+                    
+                    # Process the image to extract compartments
+                    # This will happen in the main processing pipeline
+                    
+                    # Flag that this is a selective replacement so the main pipeline knows
+                    return {
+                        'selective_replacement': True,
+                        'hole_id': result['hole_id'],
+                        'depth_from': result['depth_from'],
+                        'depth_to': result['depth_to']
+                    }
+                else:
+                    # If QAQC manager isn't available, just continue with normal processing
+                    return True
             
             # Return the result directly - it will be either:
             # - False to skip processing
@@ -3226,7 +3312,6 @@ class DuplicateHandler:
                 foreground="red"
             ).pack(pady=(0, 10))
         
-        
         # Function to show/hide metadata editor
         def toggle_metadata_editor(show=False):
             if show:
@@ -3267,9 +3352,34 @@ class DuplicateHandler:
             dialog.result = False  # Also skip processing (keep existing)
             dialog.destroy()
         
-        def on_keep_image2():
+        def on_replace_all():
             dialog.result = True  # Process this image (replace existing)
             dialog.destroy()
+        
+        def on_replace_selected():
+            # Start the QAQC review for this tray to allow selective replacement
+            if hasattr(self, 'parent') and hasattr(self.parent, 'qaqc_manager'):
+                dialog.destroy()
+                
+                # Get the path to the original image file
+                original_path = getattr(self, '_current_image_path', None)
+                if not original_path:
+                    messagebox.showerror("Error", "Original image path not found.")
+                    dialog.result = False
+                    return
+                    
+                # Create a temporary result to signal selective replacement
+                dialog.result = {
+                    'selective_replacement': True,
+                    'hole_id': hole_id,
+                    'depth_from': depth_from,
+                    'depth_to': depth_to,
+                    'original_path': original_path
+                }
+            else:
+                messagebox.showerror("Error", "QAQC manager not available.")
+                dialog.result = False
+                dialog.destroy()
         
         def on_modify():
             # Show metadata editor
@@ -3318,13 +3428,22 @@ class DuplicateHandler:
         )
         keep1_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
         
-        keep2_button = ColorButton(
+        replace_all_button = ColorButton(
             button_frame, 
-            text="Replace with New Image", 
+            text="Replace All", 
             background="#ccccff",  # Pale blue
-            command=on_keep_image2
+            command=on_replace_all
         )
-        keep2_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        replace_all_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        
+        # Add the new "Replace Selected Compartments" button
+        replace_selected_button = ColorButton(
+            button_frame, 
+            text="Replace Selected Compartments", 
+            background="#d8aefb",  # Light purple
+            command=on_replace_selected
+        )
+        replace_selected_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
         
         modify_button = ColorButton(
             button_frame, 
@@ -3352,11 +3471,15 @@ class DuplicateHandler:
         )
         cancel_button.pack(side=tk.RIGHT, padx=5)
         
+        # Store the current image path for potential QAQC processing
+        self._current_image_path = getattr(self, '_current_image_path', None)
+        
         # Wait for dialog
         dialog.wait_window()
         
         # Return the result
         return dialog.result
+
 
     def _set_decision_and_close(self, 
                               dialog: tk.Toplevel, 
@@ -4345,7 +4468,7 @@ class ChipTrayExtractor:
         Returns:
             bool: True if processing succeeded, False otherwise
         """
-        # and reference to current instance for cache access
+        # Initialize DuplicateHandler and reference to current instance for cache access
         self.duplicate_handler = DuplicateHandler(self.file_manager.processed_dir)
         self.duplicate_handler.parent = self  # Add reference to self for access to visualization cache
 
@@ -4415,13 +4538,11 @@ class ChipTrayExtractor:
             viz_steps = []
             viz_steps.append(("Original Image (Small)", small_image.copy()))
             
-            # in Class ChipTrayExtractor - Def process_image
             # Check if this file has been previously processed
             previously_processed = self.file_manager.check_original_file_processed(image_path)
 
             # Use existing metadata (e.g., from filename) or initialize empty
             metadata: Dict[str, Any] = getattr(self, 'metadata', {})
-
 
             # Extract metadata with OCR if enabled - using SMALL image
             if self.config['enable_ocr'] and self.tesseract_manager.is_available:
@@ -4799,6 +4920,9 @@ class ChipTrayExtractor:
                             compartments
                         )
                         
+                        # Start review process immediately if this is an interactive session
+                        self.qaqc_manager.start_review_process()
+                        
                         # Skip standard saving since QAQC system will handle it
                         return True
                     
@@ -4900,10 +5024,10 @@ class ChipTrayExtractor:
                             logger.warning(f"Could not move processed image {image_path}: {str(e)}")
                     else:
                         logger.warning(f"Cannot move {image_path} to organized storage: missing metadata")
-                    # TODO - check that this is correct so it isn't leaking metadata across images    
+                    # Clear metadata for next image
                     self.metadata = {}
                     return True  # Processing succeeded
-            
+                    
         except Exception as e:
             # Handle any unexpected errors during processing
             error_msg = f"Error processing {image_path}: {str(e)}"
@@ -4913,9 +5037,9 @@ class ChipTrayExtractor:
             # Update progress queue if available
             if hasattr(self, 'progress_queue'):
                 self.progress_queue.put((error_msg, None))
-                self.metadata = {} # TODO - check that this is correct so it isn't leaking metadata across images 
-
             
+            # Reset metadata for next image
+            self.metadata = {}
             return False
 
     def process_folder(self, folder_path: str) -> Tuple[int, int]:
@@ -5675,14 +5799,22 @@ class ChipTrayExtractor:
 
 
     def _start_image_review(self):
-        """Start the image review process."""
-        if hasattr(self, 'qaqc_manager'):
+        """Start the image review process for pending trays."""
+        try:
+            # Create QAQC manager if it doesn't exist
+            if not hasattr(self, 'qaqc_manager'):
+                self.qaqc_manager = QAQCManager(self.root, self.file_manager, self)
+                
             if not self.qaqc_manager.pending_trays:
                 messagebox.showinfo("No Images", "No images available for review. Process some images first.")
                 return
+                
+            # Start the review process
             self.qaqc_manager.start_review_process()
-        else:
-            messagebox.showinfo("No Images", "No images available for review. Process some images first.")
+            
+        except Exception as e:
+            self.logger.error(f"Error starting image review: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred starting the review: {str(e)}")
 
     def _show_file_structure_info(self):
         """Show information about the new file structure."""
@@ -8970,7 +9102,7 @@ class FileManager:
             self.logger.error(f"Error saving drill trace image: {str(e)}")
             return None
     
-    
+    # TODO - try to move a copy to the onedrive folder from the GUI (self.onedrive_manager._processed_originals_path) before moving it to the local processed folder
     def move_original_file(self, 
                         source_path: str, 
                         hole_id: str, 
@@ -8991,6 +9123,11 @@ class FileManager:
             Path to the new file location
         """
         try:
+            # Check if source file exists
+            if not os.path.exists(source_path):
+                self.logger.warning(f"Source file does not exist: {source_path}")
+                return None
+
             # Determine the target directory
             if is_processed:
                 target_dir = self.get_hole_dir("processed_originals", hole_id)
@@ -9016,10 +9153,32 @@ class FileManager:
                 target_path = os.path.join(target_dir, new_filename)
                 counter += 1
             
-            # Move the file
-            shutil.move(source_path, target_path)
+            # Copy the file first, then delete original after successful copy
+            try:
+                # Make sure target directory exists
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                
+                # Copy file
+                shutil.copy2(source_path, target_path)
+                
+                # Delete original file only after successful copy
+                if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+                    os.remove(source_path)
+                    self.logger.info(f"Moved original file to: {target_path}")
+                else:
+                    self.logger.error(f"Failed to copy original file: {source_path} -> {target_path}")
+                    return None
+                    
+            except (PermissionError, OSError) as e:
+                self.logger.error(f"Permission or OS error moving file: {str(e)}")
+                # Try alternative method with shutil.move
+                try:
+                    shutil.move(source_path, target_path)
+                    self.logger.info(f"Moved original file with shutil.move: {target_path}")
+                except Exception as move_e:
+                    self.logger.error(f"Failed to move with shutil.move: {str(move_e)}")
+                    return None
             
-            self.logger.info(f"Moved original file to: {target_path}")
             return target_path
             
         except Exception as e:
