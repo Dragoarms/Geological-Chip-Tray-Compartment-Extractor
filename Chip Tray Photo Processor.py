@@ -16,10 +16,9 @@ Features:
 Author: George Symonds - (using Claude Sonnet 3.7)
 
 """
-__version__ = "1.1" 
+__version__ = "1.2" 
 
 import certifi
-print(certifi.where())
 import ssl 
 import os
 import sys
@@ -43,7 +42,7 @@ import tempfile
 
 # Configure logging first
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -59,28 +58,7 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, simpledialog
 
-try:
-    import pytesseract
-except ImportError:
-    # Import failed — call fallback directly if class is defined below
-    class _TesseractImportHelper:
-        @staticmethod
-        def get_installation_instructions():
-            from platform import system
-            instructions = {
-                'Windows': 'https://github.com/UB-Mannheim/tesseract/wiki'
-            }
-            base = (
-                "To use OCR features, you need to:\n\n"
-                "1. Install Tesseract OCR for your platform\n"
-                "2. Install the pytesseract Python package: pip install pytesseract\n\n"
-            )
-            sys_type = system()
-            specific = f"For {sys_type} systems: {instructions.get(sys_type, 'See https://github.com/tesseract-ocr/tesseract')}"
-            return base + specific
-
-    print(_TesseractImportHelper.get_installation_instructions())
-
+# TODO - make sure that the update checker explains exactly what it does, what directories it creates locally, where it saves the script, and gets the user to confirm or reject the installation. Additionally, it could give the user a folderpicker and provide this to the filemanager class to create the directories where the user wants them?
 class UpdateChecker:
     """
     Checks for updates to the application by comparing local version with GitHub version.
@@ -103,11 +81,9 @@ class UpdateChecker:
         if match:
             self.owner = match.group(1)
             self.repo = match.group(2)
-            self.logger.info(f"Parsed GitHub repo: owner={self.owner}, repo={self.repo}")
         else:
             self.owner = None
             self.repo = None
-            self.logger.error(f"Could not parse GitHub repository URL: {github_repo}")
     
     def get_local_version(self) -> str:
         """
@@ -144,18 +120,16 @@ class UpdateChecker:
             if not self.owner or not self.repo:
                 return "Unknown"
                 
-            # Try location for the version information
+            # Obtain current version
             possible_paths = [
                 f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/main/version.txt",
             ]
             
-            # Create a context that doesn't verify SSL certificates
             context = ssl._create_unverified_context()
             
             # Try each path
             for raw_url in possible_paths:
                 try:
-                    self.logger.info(f"Trying URL: {raw_url}")
                     
                     # Create a request object
                     request = urllib.request.Request(raw_url)
@@ -227,6 +201,8 @@ class UpdateChecker:
             self.logger.error(f"Error comparing versions: {str(e)}")
             return result
 
+
+    # TODO - if the script has been saved somewhere other than default (and the directory has been made in a user-selected location which has been fed to the filemanager (not implemented yet) then the update should respect this location.
     def download_and_replace_script(self, file_manager, script_name="Chip Tray Photo Processor.py"):
         """
         Downloads the updated script from GitHub, replaces the current file, and restarts.
@@ -260,7 +236,8 @@ class UpdateChecker:
             # Move updated file to Program Resources
             shutil.move(tmp_path, target_path)
             self.logger.info(f"Downloaded updated script to: {target_path}")
-
+            
+            # TODO - commented out for development - don't want to accidentally overwrite a change which hasn't been uploaded to Git
             # Remove current running script
             #current_script = os.path.abspath(sys.argv[0])
             #self.logger.info(f" Deleting current script: {current_script}")
@@ -1052,11 +1029,9 @@ class MetadataInputDialog:
         self.dialog.title("Enter Chip Tray Metadata")
         self.dialog.grab_set()  # Make dialog modal
         
-        # Set a larger default size (width x height)
-        self.dialog.geometry("1200x900")
-        
-        # Ensure the dialog can be resized
-        self.dialog.resizable(True, True)
+           # Set dialog to appear on top and maximize it
+        self.dialog.attributes('-topmost', True)
+        self.dialog.state('zoomed')  # This maximizes the window
         
         self._create_widgets()
     
@@ -1522,20 +1497,212 @@ class QAQCManager:
             original_path: Path to the original image file
             compartments: List of extracted compartment images
         """
+        # First, save the compartments to the Temp_Review folder
+        temp_paths = []
+        
+        # Create a temporary directory for this hole
+        temp_review_dir = os.path.join(self.file_manager.processed_dir, "Temp_Review", hole_id)
+        os.makedirs(temp_review_dir, exist_ok=True)
+        
+        # Save each compartment temporarily
+        for i, compartment in enumerate(compartments):
+            try:
+                # Calculate compartment depth
+                depth_increment = self.extractor.config['compartment_interval']
+                comp_depth_from = depth_from + (i * depth_increment)
+                comp_depth_to = comp_depth_from + depth_increment
+                compartment_depth = int(comp_depth_to)
+                
+                # Create filename with compartment number
+                filename = f"{hole_id}_CC_{compartment_depth}_temp.png"
+                file_path = os.path.join(temp_review_dir, filename)
+                
+                # Save the image
+                cv2.imwrite(file_path, compartment)
+                temp_paths.append(file_path)
+                
+            except Exception as e:
+                self.logger.error(f"Error saving temporary compartment {i+1}: {str(e)}")
+                temp_paths.append(None)  # Add placeholder
+        
+        # Now add to the pending trays list
         self.pending_trays.append({
             'hole_id': hole_id,
             'depth_from': depth_from,
             'depth_to': depth_to,
             'original_path': original_path,
             'compartments': compartments.copy(),
-            'temp_paths': [],  # Will store temporary saved compartment paths
+            'temp_paths': temp_paths,
             'compartment_statuses': {}  # Will store status for each compartment
         })
         
-        self.logger.info(f"Added tray for review: {hole_id} {depth_from}-{depth_to}m")
+        self.logger.info(f"Added tray for review: {hole_id} {depth_from}-{depth_to}m with {len(compartments)} compartments saved to Temp_Review")
         
     def start_review_process(self):
         """Start the review process for all pending trays."""
+        # First check if we already have pending trays from previous operation
+        if self.pending_trays:
+            # Process the first tray in the queue
+            self._review_next_tray()
+            return
+        
+        # Check if there are any trays in the Temp_Review folder
+        temp_review_dir = os.path.join(self.file_manager.processed_dir, "Temp_Review")
+        if os.path.exists(temp_review_dir):
+            # Get all subdirectories (hole IDs)
+            hole_dirs = [d for d in os.listdir(temp_review_dir) 
+                        if os.path.isdir(os.path.join(temp_review_dir, d))]
+            
+            if not hole_dirs:
+                messagebox.showinfo("Review Complete", "No trays to review.")
+                return
+            
+            # Process each hole's compartments
+            for hole_id in hole_dirs:
+                hole_dir_path = os.path.join(temp_review_dir, hole_id)
+                
+                # Find all temporary compartment images
+                temp_files = [f for f in os.listdir(hole_dir_path) 
+                            if f.endswith('_temp.png') and hole_id in f]
+                
+                if not temp_files:
+                    continue
+                    
+                # Extract depth range from filenames
+                depths = []
+                for filename in temp_files:
+                    match = re.search(r'([A-Za-z]{2}\d{4})_CC_(\d+)_temp\.png', filename)
+                    if match:
+                        depth = int(match.group(2))
+                        depths.append(depth)
+                
+                if depths:
+                    # Sort depths to find min and max
+                    depths.sort()
+                    min_depth = depths[0] - 1  # Assuming 1m intervals
+                    max_depth = depths[-1]
+                    
+                    # Load the compartment images
+                    compartments = []
+                    temp_paths = []
+                    
+                    for depth in range(min_depth + 1, max_depth + 1):
+                        filename = f"{hole_id}_CC_{depth}_temp.png"
+                        file_path = os.path.join(hole_dir_path, filename)
+                        
+                        if os.path.exists(file_path):
+                            # Load image
+                            img = cv2.imread(file_path)
+                            if img is not None:
+                                compartments.append(img)
+                                temp_paths.append(file_path)
+                        else:
+                            # Create a blank image for missing compartments
+                            blank = np.ones((300, 300, 3), dtype=np.uint8) * 255
+                            cv2.putText(blank, "MISSING", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            compartments.append(blank)
+                            temp_paths.append(None)
+                    
+                    # Create a tray entry and add to pending trays
+                    tray_entry = {
+                        'hole_id': hole_id,
+                        'depth_from': min_depth,
+                        'depth_to': max_depth,
+                        'original_path': "From Temp_Review folder",  # No original path available
+                        'compartments': compartments,
+                        'temp_paths': temp_paths,
+                        'compartment_statuses': {}  # Will be populated during review
+                    }
+                    
+                    self.pending_trays.append(tray_entry)
+                    self.logger.info(f"Added tray for review from Temp_Review folder: {hole_id} {min_depth}-{max_depth}m")
+        
+        if not self.pending_trays:
+            messagebox.showinfo("Review Complete", "No trays to review.")
+            return
+        
+        # Process the first tray
+        self._review_next_tray()
+
+    def start_review_process(self):
+        """Start the review process for all pending trays."""
+        # First check if we already have pending trays from previous operation
+        if self.pending_trays:
+            # Process the first tray in the queue
+            self._review_next_tray()
+            return
+        
+        # Check if there are any trays in the Temp_Review folder
+        temp_review_dir = os.path.join(self.file_manager.processed_dir, "Temp_Review")
+        if os.path.exists(temp_review_dir):
+            # Get all subdirectories (hole IDs)
+            hole_dirs = [d for d in os.listdir(temp_review_dir) 
+                        if os.path.isdir(os.path.join(temp_review_dir, d))]
+            
+            if not hole_dirs:
+                messagebox.showinfo("Review Complete", "No trays to review.")
+                return
+            
+            # Process each hole's compartments
+            for hole_id in hole_dirs:
+                hole_dir_path = os.path.join(temp_review_dir, hole_id)
+                
+                # Find all temporary compartment images
+                temp_files = [f for f in os.listdir(hole_dir_path) 
+                            if f.endswith('_temp.png') and hole_id in f]
+                
+                if not temp_files:
+                    continue
+                    
+                # Extract depth range from filenames
+                depths = []
+                depth_increment = self.extractor.config['compartment_interval']
+                for filename in temp_files:
+                    match = re.search(r'([A-Za-z]{2}\d{4})_CC_(\d+)_temp\.png', filename)
+                    if match:
+                        depth = int(match.group(2))
+                        depths.append(depth)
+                
+                if depths:
+                    # Sort depths to find min and max
+                    depths.sort()
+                    min_depth = depths[0] - depth_increment
+                    max_depth = depths[-1]
+                    # Load the compartment images
+                    compartments = []
+                    temp_paths = []
+                    
+                    for depth in range(min_depth + 1, max_depth + 1):
+                        filename = f"{hole_id}_CC_{depth}_temp.png"
+                        file_path = os.path.join(hole_dir_path, filename)
+                        
+                        if os.path.exists(file_path):
+                            # Load image
+                            img = cv2.imread(file_path)
+                            if img is not None:
+                                compartments.append(img)
+                                temp_paths.append(file_path)
+                        else:
+                            # Create a blank image for missing compartments
+                            blank = np.ones((300, 300, 3), dtype=np.uint8) * 255
+                            cv2.putText(blank, "MISSING", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            compartments.append(blank)
+                            temp_paths.append(None)
+                    
+                    # Create a tray entry and add to pending trays
+                    tray_entry = {
+                        'hole_id': hole_id,
+                        'depth_from': min_depth,
+                        'depth_to': max_depth,
+                        'original_path': "From Temp_Review folder",  # No original path available
+                        'compartments': compartments,
+                        'temp_paths': temp_paths,
+                        'compartment_statuses': {}  # Will be populated during review
+                    }
+                    
+                    self.pending_trays.append(tray_entry)
+                    self.logger.info(f"Added tray for review from Temp_Review folder: {hole_id} {min_depth}-{max_depth}m")
+        
         if not self.pending_trays:
             messagebox.showinfo("Review Complete", "No trays to review.")
             return
@@ -1543,6 +1710,12 @@ class QAQCManager:
         # Process the first tray
         self._review_next_tray()
         
+        # Process the first tray
+        self._review_next_tray()
+        
+    # TODO - make sure all these dialog popups are brought to focus at the front of the window they're hidden behind the windows currently.
+    # TODO - change the QAQC compartment review - show the original image (whole tray debug 'small' image is fine) on the left wide, the compartment image next and then finally the button frame on the right.
+    # TODO - when the last compartment is reached there's an error - AttributeError: 'QAQCManager' object has no attribute 'approve_button'. Did you mean: 'prev_button'? it needs to trigger the moving the images out of the temp_review folder to the Chip Compartments folder, removing the suffix '_temp' uploading a copy to the Approved images folder and updating the onedrive register. then returning to the main GUI.
     def _review_next_tray(self):
         """Display the next tray for review."""
         if not self.pending_trays:
@@ -1576,6 +1749,10 @@ class QAQCManager:
         temp_dir = os.path.join(self.file_manager.processed_dir, "Temp_Review")
         os.makedirs(temp_dir, exist_ok=True)
         
+        # Create a hole-specific subfolder 
+        hole_temp_dir = os.path.join(temp_dir, self.current_tray['hole_id'])
+        os.makedirs(hole_temp_dir, exist_ok=True)
+        
         # Clear any previous temp paths
         self.current_tray['temp_paths'] = []
         
@@ -1589,9 +1766,9 @@ class QAQCManager:
                 comp_depth_to = comp_depth_from + depth_increment
                 compartment_depth = int(comp_depth_to)
                 
-                # Save temporarily
+                # Save temporarily with proper naming convention
                 filename = f"{self.current_tray['hole_id']}_CC_{compartment_depth}_temp.png"
-                file_path = os.path.join(temp_dir, filename)
+                file_path = os.path.join(hole_temp_dir, filename)
                 
                 cv2.imwrite(file_path, compartment)
                 self.current_tray['temp_paths'].append(file_path)
@@ -1600,103 +1777,137 @@ class QAQCManager:
                 self.logger.error(f"Error saving temporary compartment {i+1}: {str(e)}")
                 
     def _create_review_window(self):
-        """Create a window for reviewing compartments one by one."""
+        """Create a window for reviewing compartments with the specified layout."""
         # Close existing window if open
         if self.review_window and self.review_window.winfo_exists():
             self.review_window.destroy()
         
         # Create new window
         self.review_window = tk.Toplevel(self.root)
-        self.review_window.title(f"Review Tray: {self.current_tray['hole_id']} {self.current_tray['depth_from']}-{self.current_tray['depth_to']}m")
-        self.review_window.geometry("1000x800")
+        
+        # Set title based on current tray
+        hole_id = self.current_tray['hole_id']
+        depth_from = self.current_tray['depth_from']
+        depth_to = self.current_tray['depth_to']
+        
+        self.review_window.title(f"QAQC - {hole_id} {depth_from}-{depth_to}")
+        
+        # Set window to appear on top and maximize
+        self.review_window.attributes('-topmost', True)
+        self.review_window.state('zoomed')  # This maximizes the window
+        
+        # Protocol for window close
         self.review_window.protocol("WM_DELETE_WINDOW", self._on_review_window_close)
         
-        # Main frame
+        # Main container frame with padding
         main_frame = ttk.Frame(self.review_window, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Title and info
-        ttk.Label(
-            main_frame,
-            text=f"Reviewing: {self.current_tray['hole_id']} {self.current_tray['depth_from']}-{self.current_tray['depth_to']}m",
-            font=("Arial", 16, "bold")
-        ).pack(pady=10)
+        # Title and progress at the top
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X)
         
-        ttk.Label(
-            main_frame,
-            text=f"Original image: {os.path.basename(self.current_tray['original_path'])}",
-            font=("Arial", 10)
-        ).pack(pady=5)
-        
-        # Progress label
-        self.progress_label = ttk.Label(
-            main_frame,
-            text="Compartment 1 of X",
-            font=("Arial", 12)
+        title_label = ttk.Label(
+            title_frame,
+            text=f"QAQC - {hole_id} {depth_from}-{depth_to}",
+            font=("Arial", 18, "bold")
         )
-        self.progress_label.pack(pady=5)
+        title_label.pack(pady=(0, 5))
         
-        # Compartment frame - add a canvas for scrolling if needed
-        self.compartment_container = ttk.Frame(main_frame)
-        self.compartment_container.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Progress label (Compartment x/x)
+        self.progress_label = ttk.Label(
+            title_frame,
+            text=f"Compartment {self.current_compartment_index + 1}/{len(self.current_tray['compartments'])}",
+            font=("Arial", 14)
+        )
+        self.progress_label.pack(pady=(0, 10))
         
-        self.compartment_frame = ttk.Frame(self.compartment_container)
-        self.compartment_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Main content frame for the four panels
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
-        # Status buttons frame
-        status_frame = ttk.LabelFrame(main_frame, text="Compartment Status", padding=10)
-        status_frame.pack(fill=tk.X, pady=10)
+        # Frame 1: Existing compartment image (left side)
+        self.existing_frame = ttk.LabelFrame(content_frame, text="Existing Image", padding=10)
+        self.existing_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
-        # Status buttons - using colored buttons instead of radio buttons
-        status_button_frame = ttk.Frame(status_frame)
-        status_button_frame.pack(fill=tk.X, pady=5)
+        # Frame 2: Keep Original button
+        self.keep_original_frame = ttk.LabelFrame(content_frame, text="Keep Original", padding=10)
+        self.keep_original_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
-        # Create colored status buttons
-        ok_button = tk.Button(
-            status_button_frame,
-            text="OK",
-            background="green",
+        keep_original_btn = tk.Button(
+            self.keep_original_frame,
+            text="Keep Original",
+            background="#ccffcc",  # Pale green
             foreground="black",
             font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_OK)
+            command=self._set_keep_original_and_next,
+            height=3, 
+            width=12
         )
-        ok_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        keep_original_btn.pack(fill=tk.X, expand=True, padx=5, pady=20)
+        
+        # Frame 3: New compartment image
+        self.new_frame = ttk.LabelFrame(content_frame, text="New Image", padding=10)
+        self.new_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        # Frame 4: Status buttons
+        self.status_frame = ttk.LabelFrame(content_frame, text="Compartment Status", padding=10)
+        self.status_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+        
+        # Add status buttons in a vertical arrangement
+        ok_button = tk.Button(
+            self.status_frame,
+            text="OK",
+            background="green",
+            foreground="white",
+            font=("Arial", 12, "bold"),
+            command=lambda: self._set_status_and_next(self.STATUS_OK),
+            height=2, 
+            width=12
+        )
+        ok_button.pack(fill=tk.X, pady=5)
         
         blurry_button = tk.Button(
-            status_button_frame,
+            self.status_frame,
             text="BLURRY",
             background="#ffcccc",  # Pale red
             foreground="black",
             font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_BLURRY)
+            command=lambda: self._set_status_and_next(self.STATUS_BLURRY),
+            height=2, 
+            width=12
         )
-        blurry_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        blurry_button.pack(fill=tk.X, pady=5)
         
         damaged_button = tk.Button(
-            status_button_frame,
+            self.status_frame,
             text="DAMAGED",
             background="orange",
             foreground="black",
             font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_DAMAGED)
+            command=lambda: self._set_status_and_next(self.STATUS_DAMAGED),
+            height=2, 
+            width=12
         )
-        damaged_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        damaged_button.pack(fill=tk.X, pady=5)
         
         missing_button = tk.Button(
-            status_button_frame,
+            self.status_frame,
             text="MISSING",
             background="black",
             foreground="white",
             font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_MISSING)
+            command=lambda: self._set_status_and_next(self.STATUS_MISSING),
+            height=2, 
+            width=12
         )
-        missing_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        missing_button.pack(fill=tk.X, pady=5)
         
-        # Navigation buttons frame
+        # Frame for the previous button at the bottom
         nav_frame = ttk.Frame(main_frame)
         nav_frame.pack(fill=tk.X, pady=10)
         
-        # Previous button
+        # Previous button on the right side
         self.prev_button = ttk.Button(
             nav_frame,
             text="← Previous",
@@ -1704,40 +1915,14 @@ class QAQCManager:
         )
         self.prev_button.pack(side=tk.LEFT, padx=5)
         
-        # Next button
-        self.next_button = ttk.Button(
-            nav_frame,
-            text="Next →",
-            command=self._on_next
-        )
-        self.next_button.pack(side=tk.RIGHT, padx=5)
+        # Initialize the compartment frames to be ready for showing the current compartment
+        self.compartment_frame = self.new_frame  # Set this for compatibility with _show_current_compartment
         
-        # Action buttons frame
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=10)
+        # Ensure the "Keep Original" button frame is hidden initially
+        # It will be shown only if an existing image is found for the current compartment
+        self.keep_original_frame.pack_forget()
+        self.existing_frame.pack_forget()
         
-        # Approve button - green
-        self.approve_button = tk.Button(
-            button_frame,
-            text="APPROVE ALL COMPARTMENTS",
-            background="green",
-            foreground="white",
-            font=("Arial", 14, "bold"),
-            command=self._on_approve
-        )
-        self.approve_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=10)
-        
-        # Reject button - red
-        reject_button = tk.Button(
-            button_frame,
-            text="REJECT ALL",
-            background="red",
-            foreground="white",
-            font=("Arial", 14, "bold"),
-            command=self._on_reject
-        )
-        reject_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=5, pady=10)
-    
     def _set_status_and_next(self, status):
         """Set the status for the current compartment and move to the next one."""
         # Save current status
@@ -1755,105 +1940,92 @@ class QAQCManager:
             messagebox.showinfo("Review Complete", "All compartments have been reviewed. You can now approve or reject all.")
 
     def _show_current_compartment(self):
-        """Display the current compartment for review."""
-        # Clear previous compartment display
-        for widget in self.compartment_frame.winfo_children():
+        """Display the current compartment with the specified layout."""
+        # Clear previous content from image frames
+        for widget in self.new_frame.winfo_children():
             widget.destroy()
         
         # Update progress label
         total_compartments = len(self.current_tray['compartments'])
         self.progress_label.config(
-            text=f"Compartment {self.current_compartment_index + 1} of {total_compartments}"
+            text=f"Compartment {self.current_compartment_index + 1}/{total_compartments}"
         )
         
-        # Update navigation buttons
+        # Update navigation button state
         self.prev_button.config(state=tk.NORMAL if self.current_compartment_index > 0 else tk.DISABLED)
-        self.next_button.config(state=tk.NORMAL if self.current_compartment_index < total_compartments - 1 else tk.DISABLED)
         
         # Calculate depth for this compartment
         depth_from = self.current_tray['depth_from']
-        depth_increment = self.extractor.config['compartment_interval']
+        depth_increment = self.config['compartment_interval']
         comp_depth_from = depth_from + (self.current_compartment_index * depth_increment)
         comp_depth_to = comp_depth_from + depth_increment
         
-        # Check if this compartment interval exists in database
-        existing_image = self._check_for_existing_compartment(
-            self.current_tray['hole_id'], 
-            int(comp_depth_to)
-        )
-        
-        # Depth label
+        # Depth label for new image
         ttk.Label(
-            self.compartment_frame,
+            self.new_frame,
             text=f"Depth: {int(comp_depth_from)}-{int(comp_depth_to)}m",
             font=("Arial", 14, "bold")
         ).pack(pady=(0, 10))
         
-        # Get current status
-        current_status = self.current_tray['compartment_statuses'].get(
-            self.current_compartment_index, self.STATUS_OK
-        )
-        
-        # Image display frame - updated to handle different layouts
-        if existing_image:
-            # Two-column layout for comparison
-            image_frame = ttk.Frame(self.compartment_frame)
-            image_frame.pack(fill=tk.BOTH, expand=True)
+        # Get current compartment image
+        if self.current_compartment_index < len(self.current_tray['compartments']):
+            current_img_data = self.current_tray['compartments'][self.current_compartment_index]
             
-            # Left column - existing image
-            left_frame = ttk.Frame(image_frame)
-            left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
+            # Debug logging
+            self.logger.info(f"Loading compartment image for index {self.current_compartment_index}")
+            self.logger.info(f"Image shape: {current_img_data.shape if hasattr(current_img_data, 'shape') else 'Not a numpy array'}")
             
-            ttk.Label(
-                left_frame,
-                text="Existing Image:",
-                font=("Arial", 12, "bold")
-            ).pack(pady=(0, 5))
-            
-            existing_img = self._load_image_for_display(existing_image, max_size=(400, 500))
-            if existing_img:
-                ttk.Label(left_frame, image=existing_img).pack(pady=5)
+            # Check if we have a valid image
+            if current_img_data is not None and hasattr(current_img_data, 'shape'):
+                # Convert image for display
+                from PIL import Image, ImageTk
                 
-            # Add "Keep Original" checkbox
-            self.keep_original_var = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                left_frame,
-                text="Keep Original Image",
-                variable=self.keep_original_var
-            ).pack(pady=10)
-            
-            # Right column - new image
-            right_frame = ttk.Frame(image_frame)
-            right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
-            
-            ttk.Label(
-                right_frame,
-                text="New Image:",
-                font=("Arial", 12, "bold")
-            ).pack(pady=(0, 5))
-            
-            if self.current_compartment_index < len(self.current_tray['temp_paths']):
-                new_path = self.current_tray['temp_paths'][self.current_compartment_index]
-                new_img = self._load_image_for_display(new_path, max_size=(400, 500))
-                if new_img:
-                    ttk.Label(right_frame, image=new_img).pack(pady=5)
+                # Ensure image is in BGR/RGB format
+                if len(current_img_data.shape) == 2:  # Grayscale
+                    display_img = cv2.cvtColor(current_img_data, cv2.COLOR_GRAY2RGB)
+                else:  # Color
+                    display_img = cv2.cvtColor(current_img_data, cv2.COLOR_BGR2RGB)
+                
+                # Resize for display if needed
+                h, w = display_img.shape[:2]
+                max_size = (600, 600)
+                if h > max_size[1] or w > max_size[0]:
+                    # Calculate scale to fit within max_size
+                    scale = min(max_size[0] / w, max_size[1] / h)
+                    new_size = (int(w * scale), int(h * scale))
+                    display_img = cv2.resize(display_img, new_size, interpolation=cv2.INTER_AREA)
+                
+                # Convert to PIL and then to Tkinter format
+                pil_img = Image.fromarray(display_img)
+                tk_img = ImageTk.PhotoImage(image=pil_img)
+                
+                # Display in frame
+                img_label = ttk.Label(self.new_frame, image=tk_img)
+                img_label.image = tk_img  # Keep reference to prevent garbage collection
+                img_label.pack(padx=10, pady=10)
+            else:
+                # Display error if no valid image
+                ttk.Label(
+                    self.new_frame,
+                    text="No image available for this compartment",
+                    foreground="red",
+                    font=("Arial", 12)
+                ).pack(pady=50)
+                self.logger.error(f"No valid image data for compartment index {self.current_compartment_index}")
         else:
-            # Single column for new image only
-            if self.current_compartment_index < len(self.current_tray['temp_paths']):
-                new_path = self.current_tray['temp_paths'][self.current_compartment_index]
-                new_img = self._load_image_for_display(new_path, max_size=(600, 600))
-                if new_img:
-                    ttk.Label(self.compartment_frame, image=new_img).pack(pady=5)
-        
-        # Resize the window based on content size
-        self.review_window.update_idletasks()  # Make sure layout is updated
-        width = min(1200, max(1000, self.compartment_frame.winfo_reqwidth() + 40))
-        height = min(900, max(800, self.compartment_frame.winfo_reqheight() + 300))  # Add space for buttons
-        self.review_window.geometry(f"{width}x{height}")
+            # Display error if index out of range
+            ttk.Label(
+                self.new_frame,
+                text="Compartment index out of range",
+                foreground="red",
+                font=("Arial", 12)
+            ).pack(pady=50)
+            self.logger.error(f"Compartment index {self.current_compartment_index} out of range (total: {len(self.current_tray['compartments'])})")
         
         # Update window title with current compartment info
         self.review_window.title(
-            f"Review: {self.current_tray['hole_id']} {int(comp_depth_from)}-{int(comp_depth_to)}m ({self.current_compartment_index+1}/{total_compartments})"
+            f"QAQC - {self.current_tray['hole_id']} {self.current_tray['depth_from']}-{self.current_tray['depth_to']} - "
+            f"Compartment {self.current_compartment_index+1}/{total_compartments}"
         )
 
     def _load_image_for_display(self, path, max_size=(400, 400)):
@@ -1925,19 +2097,13 @@ class QAQCManager:
     
     def _on_previous(self):
         """Show the previous compartment."""
-        # Save current status
-        self.current_tray['compartment_statuses'][self.current_compartment_index] = self.status_var.get()
-        
         # Move to previous compartment
         if self.current_compartment_index > 0:
             self.current_compartment_index -= 1
             self._show_current_compartment()
-    
+
     def _on_next(self):
         """Show the next compartment."""
-        # Save current status
-        self.current_tray['compartment_statuses'][self.current_compartment_index] = self.status_var.get()
-        
         # Move to next compartment
         if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
             self.current_compartment_index += 1
@@ -1997,6 +2163,37 @@ class QAQCManager:
             self.logger.error(f"Error during rejection: {str(e)}")
             messagebox.showerror("Error", f"An error occurred during rejection: {str(e)}")
     
+    # TODO - the review triggered by the duplicate handler's selective replacement workflow needs to be reorganised to make more sense - currently it's cutting and jumping in the workflow.
+    def _set_status_and_next(self, status):
+        """Set the status for the current compartment and move to the next one."""
+        # Save current status
+        self.current_tray['compartment_statuses'][self.current_compartment_index] = status
+        
+        # Check if we have more compartments to review
+        if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
+            # Move to next compartment
+            self.current_compartment_index += 1
+            self._show_current_compartment()
+        else:
+            # TODO - no need for an approve button or reject button in this workflow anymore - at the last compartment just show the message box 'Review Complete ... below'
+            self.approve_button.config(state=tk.NORMAL)
+            # Optionally show a message
+            messagebox.showinfo("Review Complete", "The files have been saved locally, and to the OneDrive folder")
+
+    def _set_keep_original_and_next(self):
+        """Mark the current compartment to keep the original and move to next."""
+        # Store keep_original flag in the status dictionary
+        self.current_tray['compartment_statuses'][self.current_compartment_index] = "KEEP_ORIGINAL"
+        
+        # Move to the next compartment
+        if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
+            self.current_compartment_index += 1
+            self._show_current_compartment()
+        else:
+            # We've reached the last compartment, enable the approve button
+            self.approve_button.config(state=tk.NORMAL)
+            messagebox.showinfo("Review Complete", "The files have been saved locally, and to the OneDrive folder")
+
     # TODO - check if this is the best way to do this - Aren't the compartments saved into the Temp_Review folder and moved out of that when they are approved / given statuses?
     def _on_review_window_close(self):
         """Handle review window close event."""
@@ -2011,8 +2208,9 @@ class QAQCManager:
                 self.review_window.destroy()
                 self.pending_trays = []
     
+    
     def _save_approved_compartments(self):
-        """Save the approved compartment images using FileManager."""
+        """Save the approved compartment images using FileManager and upload to OneDrive."""
         if not self.current_tray:
             return
         
@@ -2023,6 +2221,15 @@ class QAQCManager:
         
         # Count how many compartments were processed
         processed_count = 0
+        
+        # Get OneDrive path for approved compartments
+        onedrive_manager = OneDrivePathManager(self.root)
+        onedrive_path = onedrive_manager.get_approved_folder_path()
+        
+        # Create hole-specific folder in OneDrive if needed
+        if onedrive_path:
+            onedrive_hole_folder = os.path.join(onedrive_path, hole_id)
+            os.makedirs(onedrive_hole_folder, exist_ok=True)
         
         # Save each compartment based on its status
         for i, compartment in enumerate(self.current_tray['compartments']):
@@ -2036,65 +2243,93 @@ class QAQCManager:
                 status = self.current_tray['compartment_statuses'].get(i, self.STATUS_OK)
                 
                 # Check if we should keep the original for this compartment
-                existing_image = self._check_for_existing_compartment(hole_id, compartment_depth)
-                keep_original = False
-                
-                # If there's a comparison being made between existing and new
-                if existing_image and hasattr(self, 'keep_original_var') and self.current_compartment_index == i:
-                    keep_original = self.keep_original_var.get()
-                
-                # Don't save if we're keeping the original or if marked as missing
-                if keep_original or status == self.STATUS_MISSING:
-                    self.logger.info(f"Skipping compartment {i+1}: keep_original={keep_original}, status={status}")
+                if status == "KEEP_ORIGINAL":
+                    self.logger.info(f"Skipping compartment {i+1}: keeping original image")
                     continue
+                    
+                # Don't save if marked as missing
+                if status == self.STATUS_MISSING:
+                    self.logger.info(f"Skipping compartment {i+1}: status={status}")
+                    continue
+                    
+                # Get path from temp_paths if available
+                temp_path = None
+                if i < len(self.current_tray['temp_paths']):
+                    temp_path = self.current_tray['temp_paths'][i]
                 
-                # Save using FileManager
-                self.file_manager.save_compartment(
-                    compartment,
-                    hole_id,
-                    compartment_depth,
-                    False,  # has_data
-                    self.extractor.config['output_format']
-                )
-                processed_count += 1
+                # If we have a valid temp path, use that instead of saving again
+                if temp_path and os.path.exists(temp_path):
+                    # Just move the file from Temp_Review to Chip Compartments
+                    target_path = self.file_manager.get_hole_dir("chip_compartments", hole_id)
+                    target_filename = f"{hole_id}_CC_{compartment_depth}.{self.extractor.config['output_format']}"
+                    target_full_path = os.path.join(target_path, target_filename)
+                    
+                    # Copy from temp to final location
+                    shutil.copy2(temp_path, target_full_path)
+                    local_path = target_full_path
+                else:
+                    # Save using FileManager directly if no temp path available
+                    local_path = self.file_manager.save_compartment(
+                        compartment,
+                        hole_id,
+                        compartment_depth,
+                        False,  # has_data
+                        self.extractor.config['output_format']
+                    )
                 
-                # Also copy to OneDrive approved folder if path found
-                self._copy_to_onedrive_approved(
-                    compartment,
-                    hole_id,
-                    compartment_depth
-                )
-                
+                if local_path:
+                    processed_count += 1
+                    
+                    # Upload to OneDrive if we have a path
+                    if onedrive_path:
+                        # Create OneDrive filename
+                        onedrive_filename = f"{hole_id}_CC_{compartment_depth}.{self.extractor.config['output_format']}"
+                        onedrive_file_path = os.path.join(onedrive_hole_folder, onedrive_filename)
+                        
+                        try:
+                            # Copy file to OneDrive
+                            shutil.copy2(local_path, onedrive_file_path)
+                            self.logger.info(f"Copied to OneDrive: {onedrive_file_path}")
+                            
+                            # Rename local file to indicate it was uploaded
+                            local_dir = os.path.dirname(local_path)
+                            local_name = os.path.basename(local_path)
+                            name_parts = os.path.splitext(local_name)
+                            uploaded_name = f"{name_parts[0]}_Uploaded{name_parts[1]}"
+                            uploaded_path = os.path.join(local_dir, uploaded_name)
+                            
+                            # Rename original file
+                            os.rename(local_path, uploaded_path)
+                            self.logger.info(f"Renamed local file to indicate upload: {uploaded_path}")
+                        except Exception as e:
+                            self.logger.error(f"Error copying to OneDrive: {str(e)}")
+                    
             except Exception as e:
                 self.logger.error(f"Error saving approved compartment {i+1}: {str(e)}")
         
+        # Cleanup: remove the temp files from Temp_Review folder
+        try:
+            temp_review_dir = os.path.join(self.file_manager.processed_dir, "Temp_Review", hole_id)
+            if os.path.exists(temp_review_dir):
+                # Remove temp files for this hole
+                for temp_path in self.current_tray['temp_paths']:
+                    if temp_path and os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except Exception as e:
+                            self.logger.warning(f"Could not remove temp file {temp_path}: {str(e)}")
+                
+                # Try to remove the directory if it's empty
+                try:
+                    if not os.listdir(temp_review_dir):
+                        os.rmdir(temp_review_dir)
+                except Exception as e:
+                    self.logger.warning(f"Could not remove empty temp dir {temp_review_dir}: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Error cleaning up temp files: {str(e)}")
+        
         # Log summary
         self.logger.info(f"Saved {processed_count} compartments out of {len(self.current_tray['compartments'])} total")
-    
-    def _move_original_file(self, is_approved: bool):
-        """
-        Move the original file to the appropriate directory.
-        
-        Args:
-            is_approved: Whether the tray was approved
-        """
-        if not self.current_tray:
-            return
-        
-        # Get original file path
-        original_path = self.current_tray['original_path']
-        if not os.path.exists(original_path):
-            self.logger.warning(f"Original file not found: {original_path}")
-            return
-        
-        # Move using FileManager
-        self.file_manager.move_original_file(
-            original_path,
-            self.current_tray['hole_id'],
-            self.current_tray['depth_from'],
-            self.current_tray['depth_to'],
-            is_processed=is_approved
-        )
     
     def _copy_to_onedrive_approved(self, image, hole_id, compartment_depth):
         """
@@ -2761,7 +2996,6 @@ class DuplicateHandler:
     
     Tracks processed entries to prevent unintentional duplicate processing.
     """
-    # TODO - Can we make this able to identify if there are missing compartment images within the tray? Therefore we can reject some of the compartments and process another image only extracting the rejected compartments from the original image?
     def __init__(self, output_dir: str):
         """
         Initialize the duplicate handler.
@@ -2844,11 +3078,11 @@ class DuplicateHandler:
         return None
     
     def check_duplicate(self, 
-                    hole_id: str, 
-                    depth_from: float, 
-                    depth_to: float,
-                    small_image: np.ndarray,
-                    full_filename: str) -> Union[bool, Dict[str, Any]]:
+                hole_id: str, 
+                depth_from: float, 
+                depth_to: float,
+                small_image: np.ndarray,
+                full_filename: str) -> Union[bool, Dict[str, Any]]:
         """
         Check if an entry is a potential duplicate and prompt user.
         
@@ -2879,112 +3113,110 @@ class DuplicateHandler:
         
         # Check if this exact entry exists
         is_duplicate = False
-        existing_debug_image = None
         self.duplicate_files = []  # Store duplicate files as instance variable
         
-        # Check for existing debug image
-        existing_debug_image = self.check_debug_image_exists(hole_id, depth_from, depth_to)
-        if existing_debug_image:
-            is_duplicate = True
-            self.duplicate_files.append(existing_debug_image)
-            self.logger.info(f"Found existing debug image for {hole_id} {depth_from}-{depth_to}m")
-            
-        # Also check based on entry key in processed entries
-        if entry_key in self.processed_entries:
-            is_duplicate = True
-            self.duplicate_files.extend(self.processed_entries[entry_key])
-            self.logger.info(f"Found entry in processed list for {hole_id} {depth_from}-{depth_to}m: {len(self.processed_entries[entry_key])} files")
-        
-        # Check for overlapping depth ranges with the same hole ID
-        for key, files in self.processed_entries.items():
-            # If it's the same key we already checked above, so skip
-            if entry_key == key:
-                continue
-                
-            # Check if this entry has the same hole ID
-            if key.startswith(f"{hole_id.upper()}_"):
-                # Extract depth range from the key
-                key_match = re.search(r'([A-Z]{2}\d{4})_(\d+\.?\d*)-(\d+\.?\d*)', key)
-                if key_match:
-                    key_hole_id, key_from, key_to = key_match.groups()
-                    key_from = float(key_from)
-                    key_to = float(key_to)
-                    
-                    # Check if ranges overlap
-                    if (depth_from <= key_to and depth_to >= key_from):
-                        is_duplicate = True
-                        self.duplicate_files.extend(files)
-                        self.logger.info(f"Found overlapping entry: {key} (current: {entry_key})")
-        
-        # Check Chip Compartment folder for existing compartments
+        # Check BOTH Chip Compartment folder AND Temp_Review folder for existing compartments
         try:
-            # Construct path to the chip compartment folder for this hole
+            # First check the Chip Compartments folder
             compartment_dir = os.path.join(self.output_dir, "Chip Compartments", hole_id)
+            temp_review_dir = os.path.join(self.output_dir, "Temp_Review", hole_id)
             
-            # Check if the directory exists
+            # Calculate depth range covered by this image
+            # Convert to integers for comparison
+            start_depth = int(depth_from)
+            end_depth = int(depth_to)
+            
+            # Calculate the compartment depths for this range
+            # For a range like 40-60, compartments would be at 41, 42, ..., 60
+            # Each compartment is labeled with its end depth
+            compartment_depths = list(range(start_depth + 1, end_depth + 1))
+            
+            self.logger.info(f"Image covers compartments at depths: {compartment_depths}")
+            
+            # Initialize our tracking variables
+            missing_compartments = set(compartment_depths)  # Start with all compartments as missing
+            existing_compartments = []
+            
+            # Check Chip Compartments folder if it exists
             if os.path.exists(compartment_dir) and os.path.isdir(compartment_dir):
                 self.logger.info(f"Checking compartment directory: {compartment_dir}")
                 
-                # Calculate depth range covered by this image
-                # Convert to integers for comparison
-                start_depth = int(depth_from)
-                end_depth = int(depth_to)
-                
-                # Calculate the compartment depths for this range
-                # For a range like 40-60, compartments would be at 41, 42, ..., 60
-                # Each compartment is labeled with its end depth
-                compartment_depths = list(range(start_depth + 1, end_depth + 1))
-                
-                self.logger.info(f"Image covers compartments at depths: {compartment_depths}")
-                
                 # Get all compartment files in the directory
-                missing_compartments = set(compartment_depths)  # Start with all compartments as missing
-                existing_compartments = []
+                for file in os.listdir(compartment_dir):
+                    if file.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff')):
+                        # Look for the pattern HoleID_CC_XXX
+                        match = re.search(rf'{hole_id}_CC_(\d+)', file)
+                        if match:
+                            compartment_depth = int(match.group(1))
+                            
+                            # Check if this depth is in our compartment depths
+                            if compartment_depth in compartment_depths:
+                                compartment_path = os.path.join(compartment_dir, file)
+                                existing_compartments.append({
+                                    'depth': compartment_depth,
+                                    'path': compartment_path,
+                                    'source': 'Chip Compartments'
+                                })
+                                missing_compartments.discard(compartment_depth)
+                                self.logger.info(f"Found existing compartment at depth {compartment_depth} in Chip Compartments: {file}")
+            
+            # Check Temp_Review folder if it exists
+            if os.path.exists(temp_review_dir) and os.path.isdir(temp_review_dir):
+                self.logger.info(f"Checking Temp_Review directory: {temp_review_dir}")
                 
-                for root, dirs, files in os.walk(compartment_dir):
-                    for file in files:
-                        if file.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff')):
-                            # Look for the pattern HoleID_CC_XXX
-                            match = re.search(rf'{hole_id}_CC_(\d+)', file)
-                            if match:
-                                compartment_depth = int(match.group(1))
-                                
-                                # Check if this depth is in our compartment depths
-                                if compartment_depth in compartment_depths:
-                                    compartment_path = os.path.join(root, file)
-                                    existing_compartments.append({
-                                        'depth': compartment_depth,
-                                        'path': compartment_path
-                                    })
-                                    missing_compartments.discard(compartment_depth)
-                                    self.logger.info(f"Found existing compartment at depth {compartment_depth}: {file}")
-                
-                # If we found existing compartments, mark as duplicate but show only if we have all of them
-                if existing_compartments:
-                    if not missing_compartments:
-                        # We have all compartments - mark as full duplicate
-                        is_duplicate = True
-                        self.duplicate_files.extend([comp['path'] for comp in existing_compartments])
-                        self.logger.info(f"Found all {len(existing_compartments)} compartments for {hole_id} between {start_depth}-{end_depth}m")
-                    else:
-                        # We have some compartments but not all
-                        # Mark as partial duplicate
-                        self.is_partial_duplicate = True
-                        self.existing_compartments = existing_compartments
-                        self.missing_compartments = missing_compartments
-                        self.logger.info(f"Found partial match: {len(existing_compartments)} existing compartments, {len(missing_compartments)} missing")
-                        
-                        # Store partial info for QAQC to handle
-                        if hasattr(self, 'parent') and hasattr(self.parent, 'visualization_cache'):
-                            self.parent.visualization_cache['partial_duplicate_info'] = {
-                                'existing_compartments': existing_compartments,
-                                'missing_compartments': missing_compartments
-                            }
-                        
-                        # We'll continue with processing but flag it for QAQC to handle differently
-                        return True
+                # Get all compartment files in the Temp_Review directory
+                for file in os.listdir(temp_review_dir):
+                    if file.endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff')):
+                        # Look for the pattern HoleID_CC_XXX
+                        match = re.search(rf'{hole_id}_CC_(\d+)', file)
+                        if match:
+                            compartment_depth = int(match.group(1))
+                            
+                            # Check if this depth is in our compartment depths and not already found
+                            if compartment_depth in compartment_depths and compartment_depth in missing_compartments:
+                                compartment_path = os.path.join(temp_review_dir, file)
+                                existing_compartments.append({
+                                    'depth': compartment_depth,
+                                    'path': compartment_path,
+                                    'source': 'Temp_Review'
+                                })
+                                missing_compartments.discard(compartment_depth)
+                                self.logger.info(f"Found existing compartment at depth {compartment_depth} in Temp_Review: {file}")
+            
+            # If we found existing compartments, mark as duplicate but show only if we have all of them
+            if existing_compartments:
+                if not missing_compartments:
+                    # We have all compartments - mark as full duplicate
+                    is_duplicate = True
+                    self.duplicate_files.extend([comp['path'] for comp in existing_compartments])
+                    self.logger.info(f"Found all {len(existing_compartments)} compartments for {hole_id} between {start_depth}-{end_depth}m")
+                    # Also store where they were found for better user feedback
+                    self.duplicate_sources = [comp['source'] for comp in existing_compartments]
+                else:
+                    # We have some compartments but not all
+                    # Mark as partial duplicate
+                    self.is_partial_duplicate = True
+                    self.existing_compartments = existing_compartments
+                    self.missing_compartments = missing_compartments
+                    self.logger.info(f"Found partial match: {len(existing_compartments)} existing compartments, {len(missing_compartments)} missing")
+                    
+                    # Store partial info for QAQC to handle
+                    if hasattr(self, 'parent') and hasattr(self.parent, 'visualization_cache'):
+                        self.parent.visualization_cache['partial_duplicate_info'] = {
+                            'existing_compartments': existing_compartments,
+                            'missing_compartments': missing_compartments
+                        }
+                    
+                    # We'll continue with processing but flag it for QAQC to handle differently
+                    return {
+                        'selective_replacement': True,
+                        'hole_id': hole_id,
+                        'depth_from': depth_from,
+                        'depth_to': depth_to,
+                        'original_path': full_filename
+                    }
         except Exception as e:
-            self.logger.error(f"Error checking compartment directory: {str(e)}")
+            self.logger.error(f"Error checking compartment directories: {str(e)}")
         
         # Log additional info about existing files
         if self.duplicate_files:
@@ -3002,35 +3234,19 @@ class DuplicateHandler:
                 hole_id, 
                 depth_from, 
                 depth_to, 
-                small_image, 
-                existing_debug_image
+                small_image
             )
             
             # Handle selective replacement
             if isinstance(result, dict) and result.get('selective_replacement', False):
-                # If user chose to selectively replace compartments, start the QAQC process
-                if hasattr(self, 'parent') and hasattr(self.parent, 'qaqc_manager'):
-                    # Get the tray data from the result
-                    tray_data = {
-                        'hole_id': result['hole_id'],
-                        'depth_from': result['depth_from'],
-                        'depth_to': result['depth_to'],
-                        'original_path': result['original_path']
-                    }
-                    
-                    # Process the image to extract compartments
-                    # This will happen in the main processing pipeline
-                    
-                    # Flag that this is a selective replacement so the main pipeline knows
-                    return {
-                        'selective_replacement': True,
-                        'hole_id': result['hole_id'],
-                        'depth_from': result['depth_from'],
-                        'depth_to': result['depth_to']
-                    }
-                else:
-                    # If QAQC manager isn't available, just continue with normal processing
-                    return True
+                # If user chose to selectively replace compartments, return the selective replacement flag
+                return {
+                    'selective_replacement': True,
+                    'hole_id': hole_id,
+                    'depth_from': depth_from,
+                    'depth_to': depth_to,
+                    'original_path': full_filename
+                }
             
             # Return the result directly - it will be either:
             # - False to skip processing
@@ -3039,7 +3255,6 @@ class DuplicateHandler:
             return result
         
         return True  # No duplicate found, continue processing
-    
 
     def check_existing_compartment_statuses(self, hole_id, depth_from, depth_to):
         """
@@ -3099,17 +3314,15 @@ class DuplicateHandler:
                             hole_id: str, 
                             depth_from: float, 
                             depth_to: float, 
-                            current_image: np.ndarray, 
-                            existing_image_path: Optional[str] = None) -> Union[bool, Dict[str, Any]]:
+                            current_image: np.ndarray) -> Union[bool, Dict[str, Any]]:
         """
-        Show dialog for duplicate resolution with improved UI.
+        Show dialog for duplicate resolution with improved UI and maximized layout.
         
         Args:
             hole_id: Unique hole identifier
             depth_from: Starting depth
             depth_to: Ending depth
             current_image: Current image being processed
-            existing_image_path: Path to existing image for comparison
             
         Returns:
             Either a boolean (False to skip, True to continue) or a dict with new metadata
@@ -3117,7 +3330,10 @@ class DuplicateHandler:
         # Create a Tkinter dialog for duplicate resolution
         dialog = tk.Toplevel()
         dialog.title("Duplicate Entry Detected")
-        dialog.geometry("1200x900")
+        
+        # Set dialog to appear on top and maximize it
+        dialog.attributes('-topmost', True)
+        dialog.state('zoomed')  # This maximizes the window
         
         # Store the result as a class attribute of the dialog for retrieval later
         dialog.result = None
@@ -3129,154 +3345,130 @@ class DuplicateHandler:
             'depth_to': tk.StringVar(value=str(depth_to))
         }
         
-        # Create frames
-        top_frame = ttk.Frame(dialog, padding=10)
-        top_frame.pack(fill=tk.X)
+        # Main container with padding
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
         
-        image_frame = ttk.Frame(dialog, padding=10)
-        image_frame.pack(fill=tk.BOTH, expand=True)
+        # Collect information about duplicates
+        duplicate_depths = []
+        if hasattr(self, 'duplicate_files') and self.duplicate_files:
+            for path in self.duplicate_files:
+                if path and os.path.exists(path):
+                    # Extract depth from filename
+                    match = re.search(r'_CC_(\d+)', os.path.basename(path))
+                    if match:
+                        duplicate_depths.append(match.group(1))
         
-        # Add a frame for metadata editing (initially hidden)
-        metadata_frame = ttk.Frame(dialog, padding=10)
+        # Title section
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X, pady=(0, 20))
         
-        button_frame = ttk.Frame(dialog, padding=10)
-        button_frame.pack(fill=tk.X)
-        
-        # Warning message
-        warning_label = ttk.Label(
-            top_frame, 
-            text=f"Duplicate detected for Hole {hole_id}, Depth {depth_from}-{depth_to}m",
-            font=("Arial", 12, "bold")
+        # Main title
+        title_label = ttk.Label(
+            title_frame,
+            text=f"{hole_id} - {int(depth_from)}-{int(depth_to)}m",
+            font=("Arial", 18, "bold")
         )
-        warning_label.pack(pady=10)
+        title_label.pack(pady=(0, 5))
         
-        # Load and display existing image if available
-        from PIL import Image, ImageTk
+        # Duplicate count and details
+        duplicate_count = len(duplicate_depths)
+        duplicate_text = f"{duplicate_count} existing compartment{'s' if duplicate_count != 1 else ''} detected for this tray:"
+        if duplicate_depths:
+            duplicate_text += f"\n{', '.join([d + 'm' for d in duplicate_depths])}"
         
-        # Create a label for existing image
-        existing_label = ttk.Label(
-            image_frame,
-            text="Existing Image:",
-            font=("Arial", 10, "bold")
+        duplicate_label = ttk.Label(
+            title_frame,
+            text=duplicate_text,
+            font=("Arial", 14)
         )
-        existing_label.pack(pady=(0, 5))
+        duplicate_label.pack(pady=(0, 10))
         
-        # Flag to track if we successfully loaded an existing image
-        existing_image_found = False
-        existing_img_label = None
-        
-        # First try to find the original processed image in the Processed Originals directory
-        processed_originals_dir = os.path.join(self.output_dir, "Processed Originals", hole_id)
-        if os.path.exists(processed_originals_dir):
+        # Add a frame to show existing compartments side by side
+        if duplicate_count > 0:
+            compartments_frame = ttk.LabelFrame(main_frame, text="Existing Compartments", padding=5)
+            compartments_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # Create a horizontal container for compartments
+            compartments_container = ttk.Frame(compartments_frame)
+            compartments_container.pack(fill=tk.X)
+            
+            # Load and display each compartment
+            from PIL import Image, ImageTk
+            
             try:
-                # Look for an original file that matches the depth range
-                for file in os.listdir(processed_originals_dir):
-                    # Look for a pattern like "HoleID_Depth-Depth_Original.ext"
-                    pattern = f"{hole_id}_{int(depth_from)}-{int(depth_to)}_Original"
-                    if pattern in file:
-                        original_path = os.path.join(processed_originals_dir, file)
-                        # Load and display the original image
-                        self.logger.info(f"Found existing original image: {original_path}")
-                        
-                        # Load image with OpenCV
-                        original_img = cv2.imread(original_path)
-                        if original_img is not None:
-                            # Convert to RGB for PIL
-                            original_rgb = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
-                            
-                            # Resize for display (original files can be quite large)
-                            h, w = original_rgb.shape[:2]
-                            max_height = 300
-                            if h > max_height:
-                                scale = max_height / h
-                                new_width = int(w * scale)
-                                original_rgb = cv2.resize(original_rgb, (new_width, max_height), interpolation=cv2.INTER_AREA)
-                            
-                            # Convert to PIL and then to ImageTk
-                            pil_img = Image.fromarray(original_rgb)
-                            tk_img = ImageTk.PhotoImage(image=pil_img)
-                            
-                            # Display image
-                            existing_img_label = ttk.Label(image_frame, image=tk_img)
-                            existing_img_label.image = tk_img  # Keep reference
-                            existing_img_label.pack(pady=(0, 20))
-                            
-                            existing_image_found = True
-                            break
-            except Exception as e:
-                self.logger.error(f"Error looking for original image: {str(e)}")
-        
-        # If no original file was found, fall back to compartment files
-        if not existing_image_found and hasattr(self, 'duplicate_files') and self.duplicate_files:
-            try:
-                # Find first compartment image to show as preview
-                for path in self.duplicate_files:
+                for i, path in enumerate(self.duplicate_files):
                     if path and os.path.exists(path):
-                        # Load image with OpenCV
-                        existing_img = cv2.imread(path)
-                        if existing_img is not None:
-                            # Convert to RGB for PIL
-                            existing_rgb = cv2.cvtColor(existing_img, cv2.COLOR_BGR2RGB)
-                            
-                            # Resize if needed
-                            h, w = existing_rgb.shape[:2]
-                            max_height = 300
-                            if h > max_height:
-                                scale = max_height / h
-                                new_width = int(w * scale)
-                                existing_rgb = cv2.resize(existing_rgb, (new_width, max_height))
-                            
-                            # Convert to PIL and then to ImageTk
-                            pil_img = Image.fromarray(existing_rgb)
-                            tk_img = ImageTk.PhotoImage(image=pil_img)
-                            
-                            # Display image
-                            existing_img_label = ttk.Label(image_frame, image=tk_img)
-                            existing_img_label.image = tk_img  # Keep reference
-                            existing_img_label.pack(pady=(0, 20))
-                            
-                            existing_image_found = True
-                            
-                            # Add text explaining this is a sample compartment
+                        # Create a frame for this compartment with minimal padding
+                        comp_frame = ttk.Frame(compartments_container, padding=0)  # Removed padding completely
+                        comp_frame.pack(side=tk.LEFT, padx=0)  # No horizontal padding
+                        
+                        # Extract depth from filename
+                        depth = "Unknown"
+                        match = re.search(r'_CC_(\d+)', os.path.basename(path))
+                        if match:
+                            depth = match.group(1) + "m"
+                        
+                        # Add depth label - simplified
+                        ttk.Label(
+                            comp_frame, 
+                            text=f"{depth}",  # Simplified label
+                            font=("Arial", 8)  # Even smaller font
+                        ).pack(pady=(0, 1))  # Minimal vertical padding
+                        
+                        # Load and display the compartment image
+                        try:
+                            # Load image with OpenCV
+                            comp_img = cv2.imread(path)
+                            if comp_img is not None:
+                                # Convert to RGB for PIL
+                                comp_rgb = cv2.cvtColor(comp_img, cv2.COLOR_BGR2RGB)
+                                
+                                # Resize for display
+                                h, w = comp_rgb.shape[:2]
+                                max_height = 180  # Smaller height to fit multiple compartments
+                                if h > max_height:
+                                    scale = max_height / h
+                                    new_width = int(w * scale)
+                                    comp_rgb = cv2.resize(comp_rgb, (new_width, max_height))
+                                
+                                # Convert to PIL and then to ImageTk
+                                pil_img = Image.fromarray(comp_rgb)
+                                tk_img = ImageTk.PhotoImage(image=pil_img)
+                                
+                                # Display image
+                                img_label = ttk.Label(comp_frame, image=tk_img)
+                                img_label.image = tk_img  # Keep reference
+                                img_label.pack()
+                        except Exception as e:
+                            self.logger.error(f"Error loading compartment image: {str(e)}")
                             ttk.Label(
-                                image_frame,
-                                text=f"(Sample compartment - full original not available)",
-                                font=("Arial", 9, "italic"),
-                                foreground="gray"
-                            ).pack(pady=(0, 20))
-                            
-                            break  # Only need one image for preview
-                
-                if not existing_image_found:
-                    # If no image path provided, show message
-                    ttk.Label(
-                        image_frame,
-                        text="No existing image available for preview",
-                        foreground="gray"
-                    ).pack(pady=(0, 20))
+                                comp_frame,
+                                text="Error loading image",
+                                foreground="red"
+                            ).pack()
             except Exception as e:
-                self.logger.error(f"Error loading existing image: {str(e)}")
-                # Show error message if image can't be loaded
-                ttk.Label(
-                    image_frame,
-                    text=f"Error loading existing image: {str(e)}",
-                    foreground="red"
-                ).pack(pady=(0, 20))
-        elif not existing_image_found:
-            # If no duplicate files found, show message
-            ttk.Label(
-                image_frame,
-                text="No existing image available for preview",
-                foreground="gray"
-            ).pack(pady=(0, 20))
-        
-        # Create a label for current image
-        current_label = ttk.Label(
-            image_frame,
-            text="Current Image:",
-            font=("Arial", 10, "bold")
-        )
-        current_label.pack(pady=(0, 5))
+                self.logger.error(f"Error displaying compartments: {str(e)}")
+
+            # Now, add the Keep Original button below the compartments_frame
+            keep_original_frame = ttk.Frame(main_frame)
+            keep_original_frame.pack(fill=tk.X, pady=5)
+            
+            keep_original_btn = tk.Button(
+                keep_original_frame,
+                text="Keep Original",
+                background="#ccffcc",  # Pale green
+                foreground="black",
+                font=("Arial", 12, "bold"),
+                command=on_keep_images,
+                height=2, 
+                width=20
+            )
+            keep_original_btn.pack(anchor="center")  # Center the button
+            
+            # Add a frame for the current image AFTER the Keep Original button
+            current_frame = ttk.LabelFrame(main_frame, text="Current Image", padding=10)
+            current_frame.pack(fill=tk.X, pady=(0, 20))
         
         # Display current image
         try:
@@ -3301,16 +3493,19 @@ class DuplicateHandler:
             current_tk = ImageTk.PhotoImage(image=current_pil)
             
             # Display current image
-            current_img_label = ttk.Label(image_frame, image=current_tk)
+            current_img_label = ttk.Label(current_frame, image=current_tk)
             current_img_label.image = current_tk  # Keep reference
             current_img_label.pack()
         except Exception as e:
             self.logger.error(f"Error displaying current image: {str(e)}")
             ttk.Label(
-                image_frame,
+                current_frame,
                 text=f"Error displaying current image: {str(e)}",
                 foreground="red"
-            ).pack(pady=(0, 10))
+            ).pack(pady=10)
+        
+        # Add a frame for metadata editing (initially hidden)
+        metadata_frame = ttk.Frame(dialog, padding=10)
         
         # Function to show/hide metadata editor
         def toggle_metadata_editor(show=False):
@@ -3343,133 +3538,456 @@ class DuplicateHandler:
         ttk.Entry(depth_frame, textvariable=modified_metadata['depth_to'], width=10).pack(side=tk.LEFT, padx=5)
         ttk.Label(depth_frame, text="m").pack(side=tk.LEFT)
         
-        # Direct action functions for buttons
-        def on_skip():
-            dialog.result = False  # Skip processing
+        # Button actions
+        def on_keep_images():
+            dialog.result = False  # Skip processing (keep existing)
             dialog.destroy()
         
-        def on_keep_image1():
-            dialog.result = False  # Also skip processing (keep existing)
+        def on_selective_replace():
+            # Return selective replacement flag
+            dialog.result = {
+                'selective_replacement': True,
+                'hole_id': hole_id,
+                'depth_from': depth_from,
+                'depth_to': depth_to,
+                'original_path': getattr(self, '_current_image_path', None)
+            }
             dialog.destroy()
-        
-        def on_replace_all():
-            dialog.result = True  # Process this image (replace existing)
-            dialog.destroy()
-        
-        def on_replace_selected():
-            # Start the QAQC review for this tray to allow selective replacement
-            if hasattr(self, 'parent') and hasattr(self.parent, 'qaqc_manager'):
-                dialog.destroy()
-                
-                # Get the path to the original image file
-                original_path = getattr(self, '_current_image_path', None)
-                if not original_path:
-                    messagebox.showerror("Error", "Original image path not found.")
-                    dialog.result = False
-                    return
-                    
-                # Create a temporary result to signal selective replacement
-                dialog.result = {
-                    'selective_replacement': True,
-                    'hole_id': hole_id,
-                    'depth_from': depth_from,
-                    'depth_to': depth_to,
-                    'original_path': original_path
-                }
-            else:
-                messagebox.showerror("Error", "QAQC manager not available.")
-                dialog.result = False
-                dialog.destroy()
         
         def on_modify():
             # Show metadata editor
             toggle_metadata_editor(True)
         
         def on_apply_metadata():
-            # Validate metadata
+            # Validate input
             try:
-                new_hole_id = modified_metadata['hole_id'].get()
-                new_depth_from = float(modified_metadata['depth_from'].get())
-                new_depth_to = float(modified_metadata['depth_to'].get())
+                hole_id = modified_metadata['hole_id'].get().strip()
+                depth_from_str = modified_metadata['depth_from'].get().strip()
+                depth_to_str = modified_metadata['depth_to'].get().strip()
                 
-                # Basic validation
-                if not new_hole_id or new_depth_from >= new_depth_to:
-                    raise ValueError("Invalid metadata values")
+                # Validate hole ID - must be 2 letters followed by 4 digits
+                if not hole_id:
+                    # Create a modal error dialog that appears on top
+                    error_dialog = tk.Toplevel(dialog)
+                    error_dialog.title("Validation Error")
+                    error_dialog.transient(dialog)  # Make it a child of the duplicate dialog
+                    error_dialog.grab_set()  # Make it modal
+                    error_dialog.focus_set()  # Give it focus
+                    error_dialog.attributes('-topmost', True)
+                    
+                    ttk.Label(
+                        error_dialog,
+                        text="Hole ID is required",
+                        padding=20
+                    ).pack()
+                    
+                    ttk.Button(
+                        error_dialog,
+                        text="OK",
+                        command=error_dialog.destroy
+                    ).pack(pady=10)
+                    
+                    # Wait for dialog to be closed
+                    dialog.wait_window(error_dialog)
+                    return
                 
-                # Set result to modified metadata dictionary
+                # Validate hole ID format using regex - 2 UPPERCASE letters followed by 4 digits
+                if not re.match(r'^[A-Z]{2}\d{4}$', hole_id):
+                    # If provided in lowercase, try to convert
+                    if re.match(r'^[a-z]{2}\d{4}$', hole_id):
+                        hole_id = hole_id.upper()
+                        modified_metadata['hole_id'].set(hole_id)
+                    else:
+                        # Create a modal error dialog
+                        error_dialog = tk.Toplevel(dialog)
+                        error_dialog.title("Validation Error")
+                        error_dialog.transient(dialog)
+                        error_dialog.grab_set()
+                        error_dialog.focus_set()
+                        error_dialog.attributes('-topmost', True)
+                        
+                        ttk.Label(
+                            error_dialog,
+                            text="Hole ID must be 2 uppercase letters followed by 4 digits (e.g., AB1234)",
+                            padding=20,
+                            wraplength=300
+                        ).pack()
+                        
+                        ttk.Button(
+                            error_dialog,
+                            text="OK",
+                            command=error_dialog.destroy
+                        ).pack(pady=10)
+                        
+                        # Wait for dialog to be closed
+                        dialog.wait_window(error_dialog)
+                        return
+                
+                # Check if the hole ID prefix is in the list of valid prefixes
+                if hasattr(self, 'tesseract_manager') and hasattr(self.tesseract_manager, 'config'):
+                    config = self.tesseract_manager.config
+                    if config.get('enable_prefix_validation', False):
+                        valid_prefixes = config.get('valid_hole_prefixes', [])
+                        if valid_prefixes:
+                            prefix = hole_id[:2].upper()
+                            if prefix not in valid_prefixes:
+                                # Create a modal error dialog - no "continue anyway" option
+                                error_dialog = tk.Toplevel(dialog)
+                                error_dialog.title("Prefix Validation Error")
+                                error_dialog.transient(dialog)
+                                error_dialog.grab_set()
+                                error_dialog.focus_set()
+                                error_dialog.attributes('-topmost', True)
+                                
+                                ttk.Label(
+                                    error_dialog,
+                                    text=f"The prefix '{prefix}' is not in the list of valid prefixes: {', '.join(valid_prefixes)}.",
+                                    padding=20,
+                                    wraplength=300
+                                ).pack()
+                                
+                                ttk.Button(
+                                    error_dialog,
+                                    text="OK",
+                                    command=error_dialog.destroy
+                                ).pack(pady=10)
+                                
+                                # Wait for dialog to be closed
+                                dialog.wait_window(error_dialog)
+                                return
+                
+                # Validate depth range if provided - must be whole numbers
+                depth_from = None
+                depth_to = None
+                
+                if depth_from_str:
+                    try:
+                        depth_from = float(depth_from_str)
+                        # Validate as a whole number
+                        if depth_from != int(depth_from):
+                            # Create a modal error dialog
+                            error_dialog = tk.Toplevel(dialog)
+                            error_dialog.title("Validation Error")
+                            error_dialog.transient(dialog)
+                            error_dialog.grab_set()
+                            error_dialog.focus_set()
+                            error_dialog.attributes('-topmost', True)
+                            
+                            ttk.Label(
+                                error_dialog,
+                                text="Depth From must be a whole number",
+                                padding=20
+                            ).pack()
+                            
+                            ttk.Button(
+                                error_dialog,
+                                text="OK",
+                                command=error_dialog.destroy
+                            ).pack(pady=10)
+                            
+                            # Wait for dialog to be closed
+                            dialog.wait_window(error_dialog)
+                            return
+                        # Convert to integer
+                        depth_from = int(depth_from)
+                    except ValueError:
+                        # Create a modal error dialog
+                        error_dialog = tk.Toplevel(dialog)
+                        error_dialog.title("Validation Error")
+                        error_dialog.transient(dialog)
+                        error_dialog.grab_set()
+                        error_dialog.focus_set()
+                        error_dialog.attributes('-topmost', True)
+                        
+                        ttk.Label(
+                            error_dialog,
+                            text="Depth From must be a number",
+                            padding=20
+                        ).pack()
+                        
+                        ttk.Button(
+                            error_dialog,
+                            text="OK",
+                            command=error_dialog.destroy
+                        ).pack(pady=10)
+                        
+                        # Wait for dialog to be closed
+                        dialog.wait_window(error_dialog)
+                        return
+                
+                if depth_to_str:
+                    try:
+                        depth_to = float(depth_to_str)
+                        # Validate as a whole number
+                        if depth_to != int(depth_to):
+                            # Create a modal error dialog
+                            error_dialog = tk.Toplevel(dialog)
+                            error_dialog.title("Validation Error")
+                            error_dialog.transient(dialog)
+                            error_dialog.grab_set()
+                            error_dialog.focus_set()
+                            error_dialog.attributes('-topmost', True)
+                            
+                            ttk.Label(
+                                error_dialog,
+                                text="Depth To must be a whole number",
+                                padding=20
+                            ).pack()
+                            
+                            ttk.Button(
+                                error_dialog,
+                                text="OK",
+                                command=error_dialog.destroy
+                            ).pack(pady=10)
+                            
+                            # Wait for dialog to be closed
+                            dialog.wait_window(error_dialog)
+                            return
+                        # Convert to integer
+                        depth_to = int(depth_to)
+                    except ValueError:
+                        # Create a modal error dialog
+                        error_dialog = tk.Toplevel(dialog)
+                        error_dialog.title("Validation Error")
+                        error_dialog.transient(dialog)
+                        error_dialog.grab_set()
+                        error_dialog.focus_set()
+                        error_dialog.attributes('-topmost', True)
+                        
+                        ttk.Label(
+                            error_dialog,
+                            text="Depth To must be a number",
+                            padding=20
+                        ).pack()
+                        
+                        ttk.Button(
+                            error_dialog,
+                            text="OK",
+                            command=error_dialog.destroy
+                        ).pack(pady=10)
+                        
+                        # Wait for dialog to be closed
+                        dialog.wait_window(error_dialog)
+                        return
+                
+                # Validate that depth_to is greater than depth_from
+                if depth_from is not None and depth_to is not None:
+                    if depth_to <= depth_from:
+                        # Create a modal error dialog
+                        error_dialog = tk.Toplevel(dialog)
+                        error_dialog.title("Validation Error")
+                        error_dialog.transient(dialog)
+                        error_dialog.grab_set()
+                        error_dialog.focus_set()
+                        error_dialog.attributes('-topmost', True)
+                        
+                        ttk.Label(
+                            error_dialog,
+                            text="Depth To must be greater than Depth From",
+                            padding=20
+                        ).pack()
+                        
+                        ttk.Button(
+                            error_dialog,
+                            text="OK",
+                            command=error_dialog.destroy
+                        ).pack(pady=10)
+                        
+                        # Wait for dialog to be closed
+                        dialog.wait_window(error_dialog)
+                        return
+                    
+                    # Validate that depth intervals are sensible - no "continue anyway" option
+                    if depth_to - depth_from > 40:
+                        # Create a modal error dialog
+                        error_dialog = tk.Toplevel(dialog)
+                        error_dialog.title("Validation Error")
+                        error_dialog.transient(dialog)
+                        error_dialog.grab_set()
+                        error_dialog.focus_set()
+                        error_dialog.attributes('-topmost', True)
+                        
+                        ttk.Label(
+                            error_dialog,
+                            text=f"Depth range ({depth_from}-{depth_to}) is too large. Maximum range is 40m.",
+                            padding=20,
+                            wraplength=300
+                        ).pack()
+                        
+                        ttk.Button(
+                            error_dialog,
+                            text="OK",
+                            command=error_dialog.destroy
+                        ).pack(pady=10)
+                        
+                        # Wait for dialog to be closed
+                        dialog.wait_window(error_dialog)
+                        return
+                
+                # Set result
                 dialog.result = {
-                    'hole_id': new_hole_id,
-                    'depth_from': new_depth_from,
-                    'depth_to': new_depth_to
+                    'hole_id': hole_id,
+                    'depth_from': depth_from,
+                    'depth_to': depth_to
                 }
+                
+                # Close dialog
                 dialog.destroy()
                 
-            except (ValueError, TypeError) as e:
-                messagebox.showerror("Invalid Input", f"Invalid metadata values: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error validating metadata input: {str(e)}")
+                
+                # Create a modal error dialog
+                error_dialog = tk.Toplevel(dialog)
+                error_dialog.title("Error")
+                error_dialog.transient(dialog)
+                error_dialog.grab_set()
+                error_dialog.focus_set()
+                error_dialog.attributes('-topmost', True)
+                
+                ttk.Label(
+                    error_dialog,
+                    text=f"An error occurred: {str(e)}",
+                    padding=20,
+                    wraplength=300
+                ).pack()
+                
+                ttk.Button(
+                    error_dialog,
+                    text="OK",
+                    command=error_dialog.destroy
+                ).pack(pady=10)
+                
+                # Wait for dialog to be closed
+                dialog.wait_window(error_dialog)
+
+        # Create explanation texts for help
+        button_explanations = {
+            "Keep Original": "Keep the existing compartment images. The current image will be moved to the folder: 'Failed and Skipped Originals'.",
+            "Selective Replace": "Extract all compartments to the review queue. You'll be able to choose which ones to keep during review.",
+            "Modify Metadata": "Change the hole ID or depth range on the current image - this is likely required if the label was not changed between tray photos."
+        }
         
-        def on_cancel():
-            dialog.result = False  # Default to skip if canceled
-            dialog.destroy()
+        def show_help():
+            # Create a help dialog
+            help_dialog = tk.Toplevel(dialog)
+            help_dialog.title("Help - Duplicate Handling Options")
+            help_dialog.geometry("600x500")
+            
+            # Make it modal and ensure it appears on top
+            help_dialog.transient(dialog)  # Make it a transient window of the duplicate dialog
+            help_dialog.grab_set()  # Make it modal to block parent window interaction
+            help_dialog.focus_set()  # Give it focus
+            help_dialog.attributes('-topmost', True)  # Ensure it's on top
+            
+            # Main frame with padding
+            help_frame = ttk.Frame(help_dialog, padding=20)
+            help_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Title
+            ttk.Label(
+                help_frame,
+                text="Duplicate Handling Options",
+                font=("Arial", 14, "bold")
+            ).pack(pady=(0, 20))
+            
+            # Add explanations for each button
+            for button_name, explanation in button_explanations.items():
+                option_frame = ttk.Frame(help_frame)
+                option_frame.pack(fill=tk.X, pady=5)
+                
+                ttk.Label(
+                    option_frame,
+                    text=button_name + ":",
+                    font=("Arial", 12, "bold"),
+                    width=20
+                ).pack(side=tk.LEFT, anchor="nw")
+                
+                ttk.Label(
+                    option_frame,
+                    text=explanation,
+                    wraplength=400,
+                    justify=tk.LEFT
+                ).pack(side=tk.LEFT, padx=10, fill=tk.X)
+            
+            # Close button
+            ttk.Button(
+                help_frame,
+                text="Close",
+                command=help_dialog.destroy
+            ).pack(pady=20)
+            
+            # Wait for dialog to be closed
+            dialog.wait_window(help_dialog)
+
+            
+        # Create a frame for action buttons at the bottom
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=20)
         
-        # Create buttons with improved labeling
-        skip_button = ColorButton(
-            button_frame, 
-            text="Skip Processing This Image", 
-            background="#ffcccc",  # Pale red
-            command=on_skip
-        )
-        skip_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        # Add a container to center the buttons
+        buttons_container = ttk.Frame(button_frame)
+        buttons_container.pack(anchor="center")
         
-        keep1_button = ColorButton(
-            button_frame, 
-            text="Keep Existing Image", 
+        # Keep Original button
+        keep_button = tk.Button(
+            buttons_container,
+            text="Keep Original",
             background="#ccffcc",  # Pale green
-            command=on_keep_image1
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=on_keep_images,
+            width=20,
+            height=2
         )
-        keep1_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        keep_button.grid(row=0, column=0, padx=10)
         
-        replace_all_button = ColorButton(
-            button_frame, 
-            text="Replace All", 
-            background="#ccccff",  # Pale blue
-            command=on_replace_all
-        )
-        replace_all_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
-        
-        # Add the new "Replace Selected Compartments" button
-        replace_selected_button = ColorButton(
-            button_frame, 
-            text="Replace Selected Compartments", 
+        # Selective Replace button
+        selective_button = tk.Button(
+            buttons_container,
+            text="Selective Replace",
             background="#d8aefb",  # Light purple
-            command=on_replace_selected
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=on_selective_replace,
+            width=20,
+            height=2
         )
-        replace_selected_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        selective_button.grid(row=0, column=1, padx=10)
         
-        modify_button = ColorButton(
-            button_frame, 
-            text="Modify Metadata", 
-            background="#ffffcc",  # Pale yellow
-            command=on_modify
+        # Modify Metadata button
+        modify_button = tk.Button(
+            buttons_container,
+            text="Modify Metadata",
+            background="#ffddaa",  # Light orange
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=on_modify,
+            width=20,
+            height=2
         )
-        modify_button.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+        modify_button.grid(row=0, column=2, padx=10)
         
-        # Add confirm and cancel buttons to metadata frame
-        metadata_button_frame = ttk.Frame(metadata_frame)
-        metadata_button_frame.pack(fill=tk.X, pady=10)
+        # Help button
+        help_button = tk.Button(
+            buttons_container,
+            text="[ ? ]",
+            background="lightblue",
+            foreground="black",
+            font=("Arial", 12, "bold"),
+            command=show_help,
+            width=5,
+            height=2
+        )
+        help_button.grid(row=0, column=3, padx=10)
         
+        # Add Apply button for metadata editor (initially hidden)
         apply_button = ttk.Button(
-            metadata_button_frame,
-            text="Apply Changes",
+            metadata_frame,
+            text="Apply Metadata Changes",
             command=on_apply_metadata
         )
-        apply_button.pack(side=tk.RIGHT, padx=5)
-        
-        cancel_button = ttk.Button(
-            metadata_button_frame,
-            text="Cancel",
-            command=lambda: toggle_metadata_editor(False)
-        )
-        cancel_button.pack(side=tk.RIGHT, padx=5)
+        apply_button.pack(anchor="e", pady=10)
         
         # Store the current image path for potential QAQC processing
         self._current_image_path = getattr(self, '_current_image_path', None)
@@ -3479,6 +3997,9 @@ class DuplicateHandler:
         
         # Return the result
         return dialog.result
+
+
+
 
 
     def _set_decision_and_close(self, 
@@ -3562,11 +4083,11 @@ class ChipTrayExtractor:
             'aruco_dict_type': cv2.aruco.DICT_4X4_1000,
             'corner_marker_ids': [0, 1, 2, 3],  # Top-left, top-right, bottom-right, bottom-left
             'compartment_marker_ids': list(range(4, 24)),  # 20 markers for compartments
-            'metadata_marker_id': 24,  # Marker ID between hole ID and depth labels
+            'metadata_marker_ids': [24],  # Marker ID between hole ID and depth labels, can add more in future if needed
             
             # Processing settings
             'compartment_count': 20,
-            'compartment_interval': 1.0,  # Default interval between compartments in meters
+            'compartment_interval': 1,  # Default interval between compartments in meters
             
             # OCR settings
             'enable_ocr': self.tesseract_manager.is_available,
@@ -3898,7 +4419,7 @@ class ChipTrayExtractor:
             self.progress_queue.put((f"Initial detection found {initial_marker_count} ArUco markers", None))
         
         # Check if we need to improve detection
-        expected_markers = len(self.config['corner_marker_ids']) + len(self.config['compartment_marker_ids'])
+        expected_markers = len(self.config['corner_marker_ids']) + len(self.config['compartment_marker_ids']) +1
         if initial_marker_count >= expected_markers:
             # All markers detected, no need for improvement
             return markers, viz_image
@@ -4395,7 +4916,7 @@ class ChipTrayExtractor:
                 angle_rad = np.arctan2(y2 - y1, x2 - x1)
                 angle_deg = np.degrees(angle_rad)
                 
-                if abs(angle_deg) > 0.5:  # Only correct if angle is significant
+                if abs(angle_deg) > 0.1:  # Only correct if angle is significant
                     logger.info(f"Correcting image skew of {angle_deg:.2f} degrees")
                     
                     # Get image center for rotation
@@ -4455,6 +4976,7 @@ class ChipTrayExtractor:
         except Exception as e:
             logger.error(f"Error moving processed image {source_path}: {str(e)}")
             return None
+
 
     def process_image(self, image_path: str) -> bool:
         """
@@ -4521,7 +5043,8 @@ class ChipTrayExtractor:
                 
                 # Create downsampled image
                 if hasattr(self, 'progress_queue'):
-                    self.progress_queue.put((f"Downsizing image from {w}x{h} to {new_width}x{new_height} for processing", None))
+                    pass
+                    # self.progress_queue.put((f"Downsizing image from {w}x{h} to {new_width}x{new_height} for processing", None))
                     
                 small_image = cv2.resize(original_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
             else:
@@ -4536,7 +5059,8 @@ class ChipTrayExtractor:
             
             # Store visualization steps (all on the small image)
             viz_steps = []
-            viz_steps.append(("Original Image (Small)", small_image.copy()))
+            # Don't need this:
+            # viz_steps.append(("Original Image (Small)", small_image.copy()))
             
             # Check if this file has been previously processed
             previously_processed = self.file_manager.check_original_file_processed(image_path)
@@ -4544,13 +5068,58 @@ class ChipTrayExtractor:
             # Use existing metadata (e.g., from filename) or initialize empty
             metadata: Dict[str, Any] = getattr(self, 'metadata', {})
 
+            # IMPORTANT: Always detect markers regardless of metadata source
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put(("Detecting ArUco markers...", None))
+                
+            # Detect markers in the small image using the enhanced method
+            markers, markers_viz = self.improve_aruco_detection(small_image)
+            viz_steps.append(("ArUco Markers", markers_viz))
+                
+            # Report marker detection status
+            expected_markers = set(self.config['corner_marker_ids'] + self.config['compartment_marker_ids'] + self.config['metadata_marker_ids'])
+            detected_markers = set(markers.keys())
+            missing_markers = expected_markers - detected_markers
+            
+            status_msg = f"Detected {len(detected_markers)}/{len(expected_markers)} ArUco markers"
+            logger.info(status_msg)
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put((status_msg, None))
+                
+                if missing_markers:
+                    self.progress_queue.put((f"Missing markers: {sorted(missing_markers)}", None))
+
+            # Attempt to correct skew BEFORE OCR processing - ALWAYS try this step
+            rotation_matrix = None  # Store rotation matrix for reuse
+            rotation_angle = 0.0    # Store rotation angle
+
+            try:
+                # Capture all return values from correct_image_skew
+                result = self.correct_image_skew(small_image, markers)
+                
+                # Unpack the return values correctly
+                if isinstance(result, tuple):
+                    corrected_small_image, rotation_matrix, rotation_angle = result
+                else:
+                    corrected_small_image = result
+                
+                if corrected_small_image is not small_image:  # If correction was applied
+                    # Re-detect markers on corrected image
+                    markers, markers_viz = self.improve_aruco_detection(corrected_small_image)
+                    small_image = corrected_small_image  # Update small image for further processing
+                    viz_steps.append(("Corrected Image", markers_viz))
+                    
+                    logger.info(f"Re-detected {len(markers)} markers after skew correction")
+                    if hasattr(self, 'progress_queue'):
+                        self.progress_queue.put((f"Re-detected {len(markers)} markers after skew correction", None))
+            except Exception as e:
+                logger.warning(f"Skew correction failed: {str(e)}")
+                logger.error(traceback.format_exc())
+
             # Extract metadata with OCR if enabled - using SMALL image
             if self.config['enable_ocr'] and self.tesseract_manager.is_available:
                 if hasattr(self, 'progress_queue'):
                     self.progress_queue.put(("Checking for metadata...", None))
-                
-                # Initialize empty markers dictionary if we're going to skip OCR
-                markers = {}
                 
                 try:
                     # Make sure TesseractManager has access to FileManager
@@ -4563,10 +5132,6 @@ class ChipTrayExtractor:
                         logger.info(f"Using metadata from filename: {metadata}")
                         if hasattr(self, 'progress_queue'):
                             self.progress_queue.put((f"Using metadata from filename: Hole ID={metadata.get('hole_id')}, Depth={metadata.get('depth_from')}-{metadata.get('depth_to')}m", None))
-                        
-                        # Detect markers in the small image for subsequent steps
-                        markers, markers_viz = self.improve_aruco_detection(small_image)
-                        viz_steps.append(("ArUco Markers", markers_viz))
                         
                         # Create minimal OCR metadata for dialog display
                         ocr_metadata = {
@@ -4635,14 +5200,10 @@ class ChipTrayExtractor:
                         if 'metadata_region_viz' in ocr_metadata:
                             viz_steps.append(("OCR Input", ocr_metadata['metadata_region_viz']))
                         
-                        # Always show confirmation dialog if enabled
+                        # Always show confirmation dialog for metadata
                         needs_confirmation = self.config['prompt_for_metadata']
                         
-                        ocr_confidence_msg = f"OCR confidence: {ocr_metadata.get('confidence', 0):.1f}%"
-                        logger.info(ocr_confidence_msg)
-                        logger.info(f"Will prompt for metadata confirmation: {needs_confirmation}")
-
-                    # Whether metadata is from OCR or filename, show the dialog if configured to do so
+                    # Whether metadata is from OCR or filename, show the dialog
                     if needs_confirmation and self.root is not None:
                         # Handle user confirmation through dialog
                         if hasattr(self, 'progress_queue'):
@@ -4706,11 +5267,18 @@ class ChipTrayExtractor:
                                 
                                 # Process the result based on its type
                                 if isinstance(duplicate_result, dict):
-                                    # User chose to modify metadata - update metadata and check again
-                                    logger.info(f"User modified metadata from {metadata} to {duplicate_result}")
-                                    metadata = duplicate_result
-                                    # Continue the loop to check for duplicates again with new metadata
-                                    continue
+                                    # If the result includes 'selective_replacement' flag, handle it specially
+                                    if duplicate_result.get('selective_replacement', False):
+                                        # We'll extract compartments to Temp_Review but won't trigger QAQC yet
+                                        logger.info(f"Selective replacement selected for {metadata['hole_id']} {metadata['depth_from']}-{metadata['depth_to']}m")
+                                        # Continue with processing but flag for later QAQC
+                                        break
+                                    else:
+                                        # User chose to modify metadata - update metadata and check again
+                                        logger.info(f"User modified metadata from {metadata} to {duplicate_result}")
+                                        metadata = duplicate_result
+                                        # Continue the loop to check for duplicates again with new metadata
+                                        continue
                                     
                                 elif duplicate_result == False:
                                     # User chose to skip or keep the existing image
@@ -4779,266 +5347,205 @@ class ChipTrayExtractor:
                     logger.error(f"Error during OCR processing: {str(e)}")
                     logger.error(traceback.format_exc())
 
-                # Correct image skew on the SMALL image if possible
-                rotation_matrix = None  # Store rotation matrix for reuse
-                rotation_angle = 0.0    # Store rotation angle
-
-                try:
-                    if markers:
-                        # Capture all return values from correct_image_skew
-                        result = self.correct_image_skew(small_image, markers)
-                        
-                        # Unpack the return values correctly
-                        if isinstance(result, tuple):
-                            corrected_small_image, rotation_matrix, rotation_angle = result
-                        else:
-                            corrected_small_image = result
-                        
-                        if corrected_small_image is not small_image:  # If correction was applied
-                            # Re-detect markers on corrected image
-                            markers, markers_viz = self.improve_aruco_detection(corrected_small_image)
-                            small_image = corrected_small_image  # Update small image for further processing
-                            viz_steps.append(("Corrected Image", markers_viz))
-                            
-                            logger.info(f"Re-detected {len(markers)} markers after skew correction")
-                            if hasattr(self, 'progress_queue'):
-                                self.progress_queue.put((f"Re-detected {len(markers)} markers after skew correction", None))
-                except Exception as e:
-                    logger.warning(f"Skew correction failed: {str(e)}")
-                    logger.error(traceback.format_exc())  # Add this to see the full error stack trace
-                # Report marker detection status
-                expected_markers = set(self.config['corner_marker_ids'] + self.config['compartment_marker_ids'])
-                detected_markers = set(markers.keys())
-                missing_markers = expected_markers - detected_markers
-                
-                status_msg = f"Detected {len(detected_markers)}/{len(expected_markers)} ArUco markers"
-                logger.info(status_msg)
+            # Apply the same skew correction to the original image if a rotation was applied
+            corrected_original_image = original_image
+            if rotation_matrix is not None and rotation_angle != 0.0:
                 if hasattr(self, 'progress_queue'):
-                    self.progress_queue.put((status_msg, None))
-                    
-                    if missing_markers:
-                        self.progress_queue.put((f"Missing markers: {sorted(missing_markers)}", None))
-                    
+                    self.progress_queue.put((f"Applying skew correction of {rotation_angle:.2f} degrees to high-resolution image...", None))
+                
+                # Get image dimensions
+                h, w = original_image.shape[:2]
+                center = (w // 2, h // 2)
+                
+                # Apply same rotation to original image
+                corrected_original_image = cv2.warpAffine(
+                    original_image, 
+                    rotation_matrix, 
+                    (w, h),
+                    flags=cv2.INTER_LINEAR, 
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=(255, 255, 255)
+                )
+                
+                # Use the corrected image for further processing
+                original_image = corrected_original_image
+                logger.info(f"Applied skew correction to high-resolution image")
+
+            # Extract compartment boundaries on the SMALL image
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put(("Extracting compartment boundaries...", None))
             
-                    # Apply the same skew correction to the original image if a rotation was applied
-                    corrected_original_image = original_image
-                    if rotation_matrix is not None and rotation_angle != 0.0:
-                        if hasattr(self, 'progress_queue'):
-                            self.progress_queue.put((f"Applying skew correction of {rotation_angle:.2f} degrees to high-resolution image...", None))
-                        
-                        # Get image dimensions
-                        h, w = original_image.shape[:2]
-                        center = (w // 2, h // 2)
-                        
-                        # Apply same rotation to original image
-                        corrected_original_image = cv2.warpAffine(
-                            original_image, 
-                            rotation_matrix, 
-                            (w, h),
-                            flags=cv2.INTER_LINEAR, 
-                            borderMode=cv2.BORDER_CONSTANT,
-                            borderValue=(255, 255, 255)
-                        )
-                        
-                        # Use the corrected image for further processing
-                        original_image = corrected_original_image
-                        logger.info(f"Applied skew correction to high-resolution image")
-
-                    # Extract compartment boundaries on the SMALL image
+            try:
+                boundaries_result = self.extract_compartment_boundaries(small_image, markers)
+                if boundaries_result is None:
+                    error_msg = "Failed to extract compartment boundaries"
+                    logger.error(error_msg)
                     if hasattr(self, 'progress_queue'):
-                        self.progress_queue.put(("Extracting compartment boundaries...", None))
+                        self.progress_queue.put((error_msg, None))
+                    return False
                     
-                    try:
-                        boundaries_result = self.extract_compartment_boundaries(small_image, markers)
-                        if boundaries_result is None:
-                            error_msg = "Failed to extract compartment boundaries"
-                            logger.error(error_msg)
-                            if hasattr(self, 'progress_queue'):
-                                self.progress_queue.put((error_msg, None))
-                            return False
-                            
-                        compartment_boundaries_small, boundaries_viz = boundaries_result
-                    except Exception as e:
-                        error_msg = f"Error in compartment boundary extraction: {str(e)}"
-                        logger.error(error_msg)
-                        logger.error(traceback.format_exc())
-                        if hasattr(self, 'progress_queue'):
-                            self.progress_queue.put((error_msg, None))
-                        return False
+                compartment_boundaries_small, boundaries_viz = boundaries_result
+            except Exception as e:
+                error_msg = f"Error in compartment boundary extraction: {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                if hasattr(self, 'progress_queue'):
+                    self.progress_queue.put((error_msg, None))
+                return False
+            
+            viz_steps.append(("Compartment Boundaries", boundaries_viz))
+            
+            # Report number of compartments found
+            status_msg = f"Found {len(compartment_boundaries_small)}/{self.config['compartment_count']} compartments"
+            logger.info(status_msg)
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put((status_msg, None))
+            
+            # SCALED EXTRACTION: Scale up the coordinates from small image to original image
+            if small_image.shape != original_image.shape:
+                if hasattr(self, 'progress_queue'):
+                    self.progress_queue.put(("Scaling boundaries to original image size...", None))
                     
-                    viz_steps.append(("Compartment Boundaries", boundaries_viz))
+                # Calculate scale factors
+                scale_x = original_image.shape[1] / small_image.shape[1]
+                scale_y = original_image.shape[0] / small_image.shape[0]
+                
+                # Scale up the coordinates
+                compartment_boundaries = []
+                for x1, y1, x2, y2 in compartment_boundaries_small:
+                    # Round to integers
+                    scaled_x1 = int(x1 * scale_x)
+                    scaled_y1 = int(y1 * scale_y)
+                    scaled_x2 = int(x2 * scale_x)
+                    scaled_y2 = int(y2 * scale_y)
                     
-                    # Report number of compartments found
-                    status_msg = f"Found {len(compartment_boundaries_small)}/{self.config['compartment_count']} compartments"
-                    logger.info(status_msg)
-                    if hasattr(self, 'progress_queue'):
-                        self.progress_queue.put((status_msg, None))
+                    compartment_boundaries.append((scaled_x1, scaled_y1, scaled_x2, scaled_y2))
                     
-                    # SCALED EXTRACTION: Scale up the coordinates from small image to original image
-                    if small_image.shape != original_image.shape:
-                        if hasattr(self, 'progress_queue'):
-                            self.progress_queue.put(("Scaling boundaries to original image size...", None))
-                            
-                        # Calculate scale factors
-                        scale_x = original_image.shape[1] / small_image.shape[1]
-                        scale_y = original_image.shape[0] / small_image.shape[0]
-                        
-                        # Scale up the coordinates
-                        compartment_boundaries = []
-                        for x1, y1, x2, y2 in compartment_boundaries_small:
-                            # Round to integers
-                            scaled_x1 = int(x1 * scale_x)
-                            scaled_y1 = int(y1 * scale_y)
-                            scaled_x2 = int(x2 * scale_x)
-                            scaled_y2 = int(y2 * scale_y)
-                            
-                            compartment_boundaries.append((scaled_x1, scaled_y1, scaled_x2, scaled_y2))
-                            
-                        logger.info(f"Scaled {len(compartment_boundaries)} compartment boundaries to original image")
-                    else:
-                        # No scaling needed
-                        compartment_boundaries = compartment_boundaries_small
-                    
-                    # Now extract compartments from the ORIGINAL high-resolution image
-                    if hasattr(self, 'progress_queue'):
-                        self.progress_queue.put(("Extracting high-resolution compartments...", None))
-                        
-                    compartments, compartments_viz = self.extract_compartments(original_image, compartment_boundaries)
+                logger.info(f"Scaled {len(compartment_boundaries)} compartment boundaries to original image")
+            else:
+                # No scaling needed
+                compartment_boundaries = compartment_boundaries_small
+            
+            # Now extract compartments from the ORIGINAL high-resolution image
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put(("Extracting high-resolution compartments...", None))
+                
+            compartments, compartments_viz = self.extract_compartments(original_image, compartment_boundaries)
 
-                    # Add QAQC review process here
-                    if hasattr(self, 'root') and self.root is not None:
-                        # Create QAQC manager if it doesn't exist
-                        if not hasattr(self, 'qaqc_manager'):
-                            self.qaqc_manager = QAQCManager(self.root, self.file_manager, self)
-                        
-                        # Add tray for review
-                        self.qaqc_manager.add_tray_for_review(
-                            metadata['hole_id'],
-                            metadata['depth_from'],
-                            metadata['depth_to'],
-                            image_path,
-                            compartments
-                        )
-                        
-                        # Start review process immediately if this is an interactive session
-                        self.qaqc_manager.start_review_process()
-                        
-                        # Skip standard saving since QAQC system will handle it
-                        return True
+            # Create QAQC manager if it doesn't exist
+            if not hasattr(self, 'qaqc_manager') and hasattr(self, 'root') and self.root is not None:
+                self.qaqc_manager = QAQCManager(self.root, self.file_manager, self)
+                self.qaqc_manager.config = self.config
+            
+            # Verify we have valid metadata before adding to QAQC queue
+            if (metadata.get('hole_id') and 
+                metadata.get('depth_from') is not None and 
+                metadata.get('depth_to') is not None):
+                
+                # Add the tray to the QAQC manager's queue without starting review process
+                if hasattr(self, 'qaqc_manager'):
+                    self.qaqc_manager.add_tray_for_review(
+                        metadata['hole_id'],
+                        metadata['depth_from'],
+                        metadata['depth_to'],
+                        image_path,
+                        compartments
+                    )
+                    logger.info(f"Added {metadata['hole_id']} {metadata['depth_from']}-{metadata['depth_to']}m to review queue")
+            else:
+                logger.warning("Cannot add to review queue: missing or incomplete metadata")
+                if hasattr(self, 'progress_queue'):
+                    self.progress_queue.put(("Cannot add to review queue: missing or incomplete metadata", "warning"))
 
-                    # Fallback to standard saving if we don't have a GUI
-                    # Save the extracted compartments using the FileManager
-                    if hasattr(self, 'progress_queue'):
-                        self.progress_queue.put(("Saving compartment images...", None))
-
-                    # Save the compartments and get the count of saved images
-                    num_saved = 0
-                    try:
-                        # Use the FileManager to save compartments
-                        num_saved = self.save_compartments(
-                            compartments,
-                            self.file_manager.processed_dir,  # Use FileManager's directory
-                            os.path.basename(image_path),
-                            metadata
-                        )
-                    except Exception as e:
-                        logger.error(f"Error saving compartments: {str(e)}")
-                        logger.error(traceback.format_exc())
-                    # Create and save visualization image if required
-                    if self.config['save_debug_images']:
-                        if hasattr(self, 'progress_queue'):
-                            self.progress_queue.put(("Saving debug images...", None))
-                        
-                        # Create the visualization image
-                        viz_image = self.create_visualization_image(small_image, viz_steps)
-                        
-                        # Save via FileManager if we have valid metadata
-                        if metadata and metadata.get('hole_id'):
-                            hole_id = metadata['hole_id']
-                            depth_from = metadata.get('depth_from', 0)
-                            depth_to = metadata.get('depth_to', 0)
-                            
-                            # Save visualization image
-                            self.file_manager.save_debug_image(
-                                viz_image,
-                                hole_id,
-                                depth_from,
-                                depth_to,
-                                "visualization"
-                            )
-                            
-                            logger.info(f"Saved debug images for {hole_id} {depth_from}-{depth_to}m")
-                        else:
-                            # Use FileManager to save in a general debug location
-                            temp_debug_dir = os.path.join(self.file_manager.processed_dir, "Debug Images", "Unidentified")
-                            os.makedirs(temp_debug_dir, exist_ok=True)
-                            base_name = os.path.splitext(os.path.basename(image_path))[0]
-                            viz_path = self.file_manager.save_temp_debug_image(viz_image, image_path, "visualization")
-                            cv2.imwrite(viz_path, viz_image, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                            logger.info(f"Saved visualization to {viz_path} (no metadata available)")
+            # Detect blur in the compartments
+            if self.config['enable_blur_detection']:
+                if hasattr(self, 'progress_queue'):
+                    self.progress_queue.put(("Analyzing image sharpness...", None))
                     
-                    # Final summary
-                    success_msg = f"Successfully processed {base_name}: saved {num_saved}/{len(compartments)} compartments"
-                    if metadata.get('hole_id'):
-                        success_msg += f" for hole {metadata['hole_id']}"
-                        
-                    logger.info(success_msg)
-                    if hasattr(self, 'progress_queue'):
-                        self.progress_queue.put((success_msg, None))
-                        
-                        # Add details about missing compartments if any
-                        if num_saved < len(compartments):
-                            warning_msg = f"Warning: Expected {len(compartments)} compartments, but saved {num_saved}"
-                            logger.warning(warning_msg)
-                            self.progress_queue.put((warning_msg, None))
-                    
-                    # Register with duplicate handler when processing is complete and successful
-                    if (metadata.get('hole_id') and 
-                        metadata.get('depth_from') is not None and 
-                        metadata.get('depth_to') is not None):
-                        # Register the processed entry with the duplicate handler
-                        output_files = []
-                        expected_count = self.config['compartment_count']
-                        total_depth = float(metadata['depth_to']) - float(metadata['depth_from'])
-                        depth_increment = total_depth / expected_count
-                        
-                        # Create the expected filenames
-                        for i in range(expected_count):
-                            comp_depth_to = float(metadata['depth_from']) + ((i + 1) * depth_increment)
-                            filename = f"{metadata['hole_id']}_CC_{int(comp_depth_to)}.{self.config['output_format']}"
-                            output_files.append(filename)
-                        
-                        self.duplicate_handler.register_processed_entry(
-                            metadata['hole_id'], 
-                            metadata['depth_from'], 
-                            metadata['depth_to'], 
-                            output_files
-                        )
+                blur_results = self.detect_blur_in_compartments(compartments, os.path.basename(image_path))
 
-                    # Move the processed image to the appropriate folder
-                    if (metadata and metadata.get('hole_id') and 
-                        metadata.get('depth_from') is not None and 
-                        metadata.get('depth_to') is not None):
-                        
-                        try:
-                            # Use the FileManager to move the original file
-                            new_path = self.file_manager.move_original_file(
-                                image_path,
-                                metadata['hole_id'],
-                                metadata['depth_from'],
-                                metadata['depth_to'],
-                                is_processed=True
-                            )
-                            
-                            logger.info(f"Moved processed image to: {new_path}")
-                        except Exception as e:
-                            # Log move error but don't interrupt overall processing result
-                            logger.warning(f"Could not move processed image {image_path}: {str(e)}")
-                    else:
-                        logger.warning(f"Cannot move {image_path} to organized storage: missing metadata")
-                    # Clear metadata for next image
-                    self.metadata = {}
-                    return True  # Processing succeeded
+            # Create and save visualization image if required
+            if self.config['save_debug_images']:
+                if hasattr(self, 'progress_queue'):
+                    self.progress_queue.put(("Saving debug images...", None))
+                
+                # Create the visualization image
+                viz_image = self.create_visualization_image(small_image, viz_steps)
+                
+                # Save via FileManager if we have valid metadata
+                if metadata and metadata.get('hole_id'):
+                    hole_id = metadata['hole_id']
+                    depth_from = metadata.get('depth_from', 0)
+                    depth_to = metadata.get('depth_to', 0)
+                    
+                    # Save visualization image
+                    self.file_manager.save_debug_image(
+                        viz_image,
+                        hole_id,
+                        depth_from,
+                        depth_to,
+                        "visualization"
+                    )
+                    
+                    logger.info(f"Saved debug images for {hole_id} {depth_from}-{depth_to}m")
+                else:
+                    # Use FileManager to save in a general debug location
+                    viz_path = self.file_manager.save_temp_debug_image(viz_image, image_path, "visualization")
+                    logger.info(f"Saved visualization to {viz_path} (no metadata available)")
+            
+            # Register with duplicate handler when processing is complete and successful
+            if (metadata.get('hole_id') and 
+                metadata.get('depth_from') is not None and 
+                metadata.get('depth_to') is not None):
+                # Register the processed entry with the duplicate handler
+                output_files = []
+                expected_count = self.config['compartment_count']
+                total_depth = float(metadata['depth_to']) - float(metadata['depth_from'])
+                depth_increment = total_depth / expected_count
+                
+                # Create the expected filenames
+                for i in range(expected_count):
+                    comp_depth_to = float(metadata['depth_from']) + ((i + 1) * depth_increment)
+                    filename = f"{metadata['hole_id']}_CC_{int(comp_depth_to)}.{self.config['output_format']}"
+                    output_files.append(filename)
+                
+                self.duplicate_handler.register_processed_entry(
+                    metadata['hole_id'], 
+                    metadata['depth_from'], 
+                    metadata['depth_to'], 
+                    output_files
+                )
+
+                # Move the processed image to the appropriate folder
+                try:
+                    # Use the FileManager to move the original file
+                    new_path = self.file_manager.move_original_file(
+                        image_path,
+                        metadata['hole_id'],
+                        metadata['depth_from'],
+                        metadata['depth_to'],
+                        is_processed=True
+                    )
+                    
+                    logger.info(f"Moved processed image to: {new_path}")
+                except Exception as e:
+                    # Log move error but don't interrupt overall processing result
+                    logger.warning(f"Could not move processed image {image_path}: {str(e)}")
+            else:
+                logger.warning(f"Cannot move {image_path} to organized storage: missing metadata")
+            
+            # Final summary
+            success_msg = f"Successfully processed {base_name}: added {len(compartments)} compartments to review queue"
+            if metadata.get('hole_id'):
+                success_msg += f" for hole {metadata['hole_id']}"
+                
+            logger.info(success_msg)
+            if hasattr(self, 'progress_queue'):
+                self.progress_queue.put((success_msg, None))
+            
+            # Clear metadata for next image
+            self.metadata = {}
+            return True  # Processing succeeded
                     
         except Exception as e:
             # Handle any unexpected errors during processing
@@ -5054,6 +5561,8 @@ class ChipTrayExtractor:
             self.metadata = {}
             return False
 
+
+    ############################################################################
     def process_folder(self, folder_path: str) -> Tuple[int, int]:
         """
         Process all images in a folder with enhanced progress reporting.
@@ -5304,21 +5813,76 @@ class ChipTrayExtractor:
             logger.error(f"Error in on_generate_trace: {str(e)}")
             logger.error(traceback.format_exc())
             
+    
+
     def create_gui(self):
         """Create a GUI for chip tray extraction with enhanced status display."""
         self.root = tk.Tk()
         self.root.title("Chip Tray Extractor")
+        # Maximize the main window on startup
+        self.root.state('zoomed')  # This works on Windows
+        
+        # Set custom font sizes
+        default_font = ('Arial', 11)
+        header_font = ('Arial', 14, 'bold')
+        title_font = ('Arial', 16, 'bold')
+        
+        # Configure styles
+        style = ttk.Style()
+        style.configure('TLabel', font=default_font)
+        style.configure('TButton', font=default_font)
+        style.configure('TCheckbutton', font=default_font)
+        style.configure('TEntry', font=default_font)
+        style.configure('Header.TLabel', font=header_font)
+        style.configure('Title.TLabel', font=title_font)
+        
+        # Define theme colors
+        self.primary_color = "#6CC744"  # Green
+        self.secondary_color = "#00AEC7"  # Blue
+        self.light_green = "#E5F7E0"  # Light green for valid fields
+        self.light_red = "#FFE0E0"  # Light red for invalid fields
+        
+        # Create a scrollable canvas for the main content
+        canvas_frame = ttk.Frame(self.root)
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(canvas_frame)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        
+        # Configure canvas
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Create a frame inside the canvas for the content
+        main_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=main_frame, anchor="nw", tags="main_frame")
+        
+        # Configure canvas scrolling
+        def configure_canvas(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure("main_frame", width=event.width)
+        
+        main_frame.bind("<Configure>", configure_canvas)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure("main_frame", width=e.width))
+        
+        # Enable mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
         # Set up the main frame with padding
-        main_frame = ttk.Frame(self.root, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        content_frame = ttk.Frame(main_frame, padding="20")
+        content_frame.pack(fill=tk.BOTH, expand=True)
         
         # Title
-        title_label = ttk.Label(main_frame, text="Chip Tray Extractor ", font=("Arial", 16, "bold"))
+        title_label = ttk.Label(content_frame, text="Chip Tray Extractor", style='Title.TLabel')
         title_label.pack(pady=(0, 15))
-        
+
         # Input frame - always expanded
-        input_frame = ttk.LabelFrame(main_frame, text="Input", padding=10)
+        input_frame = ttk.LabelFrame(content_frame, text="Input", padding=10)
         input_frame.pack(fill=tk.X, pady=(0, 10))
         
         folder_frame = ttk.Frame(input_frame)
@@ -5327,11 +5891,29 @@ class ChipTrayExtractor:
         folder_label = ttk.Label(folder_frame, text="Input Folder:", width=15, anchor='w')
         folder_label.pack(side=tk.LEFT)
         
+        # Custom styled entry with background color based on content
         self.folder_var = tk.StringVar()
-        folder_entry = ttk.Entry(folder_frame, textvariable=self.folder_var)
-        folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.folder_entry = tk.Entry(folder_frame, textvariable=self.folder_var, 
+                                font=default_font, bg=self.light_red)
+        self.folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        browse_button = ttk.Button(folder_frame, text="Browse", command=self.browse_folder)
+        # Update entry background color when text changes
+        def update_folder_color(*args):
+            if self.folder_var.get():
+                self.folder_entry.config(bg=self.light_green)
+            else:
+                self.folder_entry.config(bg=self.light_red)
+        
+        self.folder_var.trace_add("write", update_folder_color)
+        
+        # Styled browse button
+        browse_button = ColorButton(
+            folder_frame, 
+            text="Browse", 
+            background=self.secondary_color,
+            foreground="white",
+            command=self.browse_folder
+        )
         browse_button.pack(side=tk.RIGHT)
         
         # Add compartment interval setting
@@ -5343,20 +5925,20 @@ class ChipTrayExtractor:
         
         # Create a dropdown for common interval choices
         self.interval_var = tk.DoubleVar(value=self.config['compartment_interval'])
-        interval_choices = [1.0, 2.0]
+        interval_choices = [1, 2]
         interval_dropdown = ttk.Combobox(interval_frame, textvariable=self.interval_var, 
-                                    values=interval_choices, width=5)
+                                    values=interval_choices, width=5, font=default_font)
         interval_dropdown.pack(side=tk.LEFT)
-        
+
         # Output settings - always expanded
-        output_frame = ttk.LabelFrame(main_frame, text="Output Settings", padding=10)
+        output_frame = ttk.LabelFrame(content_frame, text="Output Settings", padding=10)
         output_frame.pack(fill=tk.X, pady=(0, 10))
 
         # Centralized storage information
         storage_frame = ttk.Frame(output_frame)
         storage_frame.pack(fill=tk.X, pady=2)
 
-        storage_label = ttk.Label(storage_frame, text="Local Output Location:", width=15, anchor='w')
+        storage_label = ttk.Label(storage_frame, text="Local Output:", width=15, anchor='w')
         storage_label.pack(side=tk.LEFT)
 
         # Display read-only output location (the centralized location)
@@ -5365,45 +5947,15 @@ class ChipTrayExtractor:
         storage_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Add info button to explain file structure
-        info_button = ttk.Button(storage_frame, text="?", width=2, command=self._show_file_structure_info)
-        info_button.pack(side=tk.RIGHT, padx=(5, 0))
-
-        # Add OneDrive Settings - initially collapsed
-        onedrive_collapsible = CollapsibleFrame(main_frame, text="OneDrive Path Settings", expanded=False)
-        onedrive_collapsible.pack(fill=tk.X, pady=(0, 10))
-
-        # Create variables for OneDrive paths
-        self.approved_path_var = tk.StringVar()
-        self.processed_originals_path_var = tk.StringVar()
-        self.drill_traces_path_var = tk.StringVar()
-
-        # Initialize variables with default values from OneDrivePathManager
-        onedrive_manager = OneDrivePathManager()
-        default_project_path = "Gabon - Belinga - Exploration Drilling"
-        default_project_path_alt = os.path.join("Shared Documents", "Exploration Drilling")
-
-        # Set defaults to display in the GUI
-        self.approved_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Approved Compartment Images"))
-        self.processed_originals_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "4) Processed Originals"))
-        self.drill_traces_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "5) Drill Traces"))
-
-        # Create path input fields
-        self._create_onedrive_path_field(onedrive_collapsible.content_frame, "Approved Folder:", self.approved_path_var)
-        self._create_onedrive_path_field(onedrive_collapsible.content_frame, "Processed Originals:", self.processed_originals_path_var)
-        self._create_onedrive_path_field(onedrive_collapsible.content_frame, "Drill Traces:", self.drill_traces_path_var)
-
-        # Add Register path input
-        self.register_path_var = tk.StringVar()
-        self.register_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Chip Tray Photo Register (Automatic).xlsx"))
-        self._create_onedrive_path_field(onedrive_collapsible.content_frame, "Excel Register:", self.register_path_var)
-
-        # Add a button to save settings
-        save_onedrive_button = ttk.Button(
-            onedrive_collapsible.content_frame,
-            text="Apply Path Settings",
-            command=self._update_onedrive_paths
+        info_button = ColorButton(
+            storage_frame, 
+            text="?", 
+            width=2, 
+            background=self.secondary_color,
+            foreground="white",
+            command=self._show_file_structure_info
         )
-        save_onedrive_button.pack(anchor="e", pady=(10, 5))
+        info_button.pack(side=tk.RIGHT, padx=(5, 0))
 
         # Output format
         format_frame = ttk.Frame(output_frame)
@@ -5417,8 +5969,6 @@ class ChipTrayExtractor:
         format_dropdown = ttk.OptionMenu(format_frame, self.format_var, self.config['output_format'], *format_options)
         format_dropdown.pack(side=tk.LEFT)
         
-
-
         # Save debug images option (moved to output frame)
         debug_frame = ttk.Frame(output_frame)
         debug_frame.pack(fill=tk.X, pady=2)
@@ -5426,10 +5976,79 @@ class ChipTrayExtractor:
         self.debug_var = tk.BooleanVar(value=self.config['save_debug_images'])
         debug_check = ttk.Checkbutton(debug_frame, text="Save Debug Images", variable=self.debug_var)
         debug_check.pack(anchor='w')
+
+        # Initialize OneDrivePathManager to check for paths
+        onedrive_manager = OneDrivePathManager()
         
+        # Check if paths exist
+        approved_path_exists = onedrive_manager.get_approved_folder_path() is not None
+        processed_originals_exists = onedrive_manager.get_processed_originals_path() is not None
+        register_path_exists = onedrive_manager.get_register_path() is not None
+        
+        # Add OneDrive Settings - expand based on path validity
+        should_expand = not (approved_path_exists and processed_originals_exists and register_path_exists)
+        onedrive_collapsible = CollapsibleFrame(
+            content_frame, 
+            text="OneDrive Path Settings", 
+            expanded=should_expand
+        )
+        onedrive_collapsible.pack(fill=tk.X, pady=(0, 10))
+
+        # Create variables for OneDrive paths
+        self.approved_path_var = tk.StringVar()
+        self.processed_originals_path_var = tk.StringVar()
+        self.drill_traces_path_var = tk.StringVar()
+        self.register_path_var = tk.StringVar()
+
+        # Initialize variables with default values from OneDrivePathManager
+        default_project_path = "Gabon - Belinga - Exploration Drilling"
+        default_project_path_alt = os.path.join("Shared Documents", "Exploration Drilling")
+
+        # Set defaults to display in the GUI
+        self.approved_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Approved Compartment Images"))
+        self.processed_originals_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "4) Processed Originals"))
+        self.drill_traces_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "5) Drill Traces"))
+        self.register_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Chip Tray Photo Register (Automatic).xlsx"))
+
+        # Create path input fields with improved label width
+        self._create_onedrive_path_field(
+            onedrive_collapsible.content_frame, 
+            "Approved Folder:", 
+            self.approved_path_var, 
+            approved_path_exists
+        )
+        self._create_onedrive_path_field(
+            onedrive_collapsible.content_frame, 
+            "Processed Originals Folder:", 
+            self.processed_originals_path_var,
+            processed_originals_exists
+        )
+        self._create_onedrive_path_field(
+            onedrive_collapsible.content_frame, 
+            "Drill Traces Folder:", 
+            self.drill_traces_path_var,
+            True  # This one isn't checked by the manager
+        )
+        self._create_onedrive_path_field(
+            onedrive_collapsible.content_frame, 
+            "Excel Register:", 
+            self.register_path_var,
+            register_path_exists
+        )
+
+        # Add a button to save settings
+        save_onedrive_button = ColorButton(
+            onedrive_collapsible.content_frame,
+            text="Apply Path Settings",
+            background=self.primary_color,
+            foreground="white",
+            command=self._update_onedrive_paths
+        )
+        save_onedrive_button.pack(anchor="e", pady=(10, 5))
+
         # Create collapsible frames for Blur Detection and OCR Settings
         # Blur Detection - initially collapsed
-        blur_collapsible = CollapsibleFrame(main_frame, text="Blur Detection", expanded=False)
+        blur_collapsible = CollapsibleFrame(content_frame, text="Blur Detection", expanded=False)
         blur_collapsible.pack(fill=tk.X, pady=(0, 10))
         
         # Move blur detection content to the collapsible frame's content_frame
@@ -5551,17 +6170,21 @@ class ChipTrayExtractor:
         calibration_frame = ttk.Frame(blur_collapsible.content_frame)
         calibration_frame.pack(fill=tk.X, pady=(5, 0))
         
-        calibrate_button = ttk.Button(
+        calibrate_button = ColorButton(
             calibration_frame,
             text="Calibrate Blur Detection",
+            background=self.secondary_color,
+            foreground="white",
             command=self._show_blur_calibration_dialog
         )
         calibrate_button.pack(side=tk.LEFT, padx=(0, 10))
         
-        help_button = ttk.Button(
+        help_button = ColorButton(
             calibration_frame,
             text="?",
             width=2,
+            background=self.secondary_color,
+            foreground="white",
             command=self._show_blur_help
         )
         help_button.pack(side=tk.RIGHT)
@@ -5570,7 +6193,7 @@ class ChipTrayExtractor:
         self.blur_settings_frame = blur_collapsible.content_frame
         
         # OCR Settings - initially collapsed
-        ocr_collapsible = CollapsibleFrame(main_frame, text="OCR Settings", expanded=False)
+        ocr_collapsible = CollapsibleFrame(content_frame, text="OCR Settings", expanded=False)
         ocr_collapsible.pack(fill=tk.X, pady=(0, 10))
         
         # Enable OCR checkbox
@@ -5597,7 +6220,7 @@ class ChipTrayExtractor:
         prefix_frame = ttk.Frame(ocr_collapsible.content_frame)
         prefix_frame.pack(fill=tk.X, pady=5)
         
-        prefix_label = ttk.Label(prefix_frame, text="Valid Prefixes (comma separated):", width=25, anchor='w')
+        prefix_label = ttk.Label(prefix_frame, text="Valid Prefixes (comma separated):", width=30, anchor='w')
         prefix_label.pack(side=tk.LEFT, padx=(40, 5))
         
         # Convert list to comma-separated string for display
@@ -5613,9 +6236,9 @@ class ChipTrayExtractor:
         self._toggle_blur_settings()
         self._toggle_ocr_settings()
         self._toggle_prefix_settings()
-        
+
         # Progress bar
-        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding=10)
+        progress_frame = ttk.LabelFrame(content_frame, text="Progress", padding=10)
         progress_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.progress_var = tk.DoubleVar()
@@ -5624,11 +6247,11 @@ class ChipTrayExtractor:
         self.progress_bar.pack(fill=tk.X)
         
         # Status text - enlarged and improved for better visibility
-        status_frame = ttk.LabelFrame(main_frame, text="Detailed Status", padding=10)
+        status_frame = ttk.LabelFrame(content_frame, text="Detailed Status", padding=10)
         status_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Add a text widget with scrollbar
-        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 10))
+        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 11))
         self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         scrollbar = ttk.Scrollbar(status_frame, command=self.status_text.yview)
@@ -5643,36 +6266,57 @@ class ChipTrayExtractor:
         self.status_text.tag_configure("success", foreground="green")
         self.status_text.tag_configure("info", foreground="blue")
         
-        # Action buttons
-        button_frame = ttk.Frame(main_frame)
+        # Action buttons - arranged in the specified order
+        button_frame = ttk.Frame(content_frame)
         button_frame.pack(fill=tk.X, pady=(0, 5))
         
-        self.process_button = ttk.Button(button_frame, text="Process Photos", 
-                                    command=self.start_processing)
+        # Button layout - first row
+        first_row = ttk.Frame(button_frame)
+        first_row.pack(fill=tk.X, pady=(0, 5))
+        
+        self.process_button = ColorButton(
+            first_row, 
+            text="Process Photos", 
+            background=self.primary_color,
+            foreground="white",
+            command=self.start_processing
+        )
         self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
-        quit_button = ttk.Button(button_frame, text="Quit", command=self.quit_app)
-        quit_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
+        self.review_button = ColorButton(
+            first_row,
+            text="Review Extracted Images",
+            background=self.secondary_color,
+            foreground="white",
+            command=self._start_image_review
+        )
+        self.review_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
         
-        # Add Generate Drillhole Trace button below main buttons
-        control_frame = ttk.Frame(main_frame, padding=(0, 5, 0, 0))
-        control_frame.pack(fill=tk.X)
+        # Second row
+        second_row = ttk.Frame(button_frame)
+        second_row.pack(fill=tk.X, pady=(0, 5))
         
-        self.trace_button = ttk.Button(
-            control_frame,
+        self.trace_button = ColorButton(
+            second_row,
             text="Generate Drillhole Trace",
+            background=self.primary_color,
+            foreground="white",
             command=self.on_generate_trace
         )
         self.trace_button.pack(fill=tk.X)
-
-
-        # Add Review button below the trace button
-        self.review_button = ttk.Button(
-            control_frame,
-            text="Review Extracted Images",
-            command=self._start_image_review
+        
+        # Quit button row
+        third_row = ttk.Frame(button_frame)
+        third_row.pack(fill=tk.X)
+        
+        quit_button = ColorButton(
+            third_row, 
+            text="Quit", 
+            background="#D32F2F",  # Red for quit button
+            foreground="white",
+            command=self.quit_app
         )
-        self.review_button.pack(fill=tk.X, pady=(5, 0))
+        quit_button.pack(side=tk.RIGHT, fill=tk.X, padx=(5, 0), pady=(5, 0))
         
         # Set up a timer to check for progress updates
         self.root.after(100, self.check_progress)
@@ -5684,13 +6328,6 @@ class ChipTrayExtractor:
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
         
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Browse Folder...", command=self.browse_folder)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.quit_app)
-        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -5701,66 +6338,8 @@ class ChipTrayExtractor:
         if self.config.get('check_for_updates', True):
             # Schedule update check after GUI is fully loaded
             self.root.after(2000, self._check_updates_at_startup)
-       
-        # Progress bar
-        progress_frame = ttk.LabelFrame(main_frame, text="Progress", padding=10)
-        progress_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
-                                        orient=tk.HORIZONTAL, length=100, mode='determinate')
-        self.progress_bar.pack(fill=tk.X)
-        
-        # Status text - enlarged and improved for better visibility
-        status_frame = ttk.LabelFrame(main_frame, text="Detailed Status", padding=10)
-        status_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # Add a text widget with scrollbar
-        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 10))
-        self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scrollbar = ttk.Scrollbar(status_frame, command=self.status_text.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.status_text.config(yscrollcommand=scrollbar.set)
-        self.status_text.config(state=tk.DISABLED)
-        
-        # Add text tags for different status types (error, warning, success)
-        self.status_text.tag_configure("error", foreground="red")
-        self.status_text.tag_configure("warning", foreground="orange")
-        self.status_text.tag_configure("success", foreground="green")
-        self.status_text.tag_configure("info", foreground="blue")
-        
-        # Action buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 5))
 
-        
-        control_frame = ttk.Frame(self.root, padding="10")
-        control_frame.pack(fill=tk.X, pady=5)
 
-        # Generate Drillhole Trace
-        self.trace_button = ttk.Button(
-            control_frame,
-            text="Generate Drillhole Trace",
-            command=self.on_generate_trace
-        )
-        self.trace_button.pack(side=tk.LEFT, padx=5, pady=5)
-
-        
-        self.process_button = ttk.Button(button_frame, text="Process Photos", 
-                                    command=self.start_processing)
-        self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        quit_button = ttk.Button(button_frame, text="Quit", command=self.quit_app)
-        quit_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
-        
-        
-        # Set up a timer to check for progress updates
-        self.root.after(100, self.check_progress)
-        
-        # Add initial status message
-        self.update_status("Ready. Select a folder and click 'Process Photos'.", "info")
 
 
     def on_check_for_updates(self):
@@ -5798,29 +6377,40 @@ class ChipTrayExtractor:
         except Exception as e:
             self.logger.error(f"Error checking for updates on startup: {e}")
 
-    def _create_onedrive_path_field(self, parent, label_text, string_var):
-            """Create a field for OneDrive path input with browse button."""
-            frame = ttk.Frame(parent)
-            frame.pack(fill=tk.X, pady=5)
-            
-            label = ttk.Label(frame, text=label_text, width=15, anchor='w')
-            label.pack(side=tk.LEFT)
-            
-            entry = ttk.Entry(frame, textvariable=string_var)
-            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-            
-            browse_button = ttk.Button(
-                frame, 
-                text="Browse", 
-                command=lambda: self._browse_onedrive_path(string_var)
-            )
-            browse_button.pack(side=tk.RIGHT)
+    def _create_onedrive_path_field(self, parent, label_text, string_var, valid=False):
+        """Create a field for OneDrive path input with browse button."""
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=5)
+        
+        label = ttk.Label(frame, text=label_text, width=25, anchor='w')
+        label.pack(side=tk.LEFT)
+        
+        # Use custom Entry with background color
+        entry = tk.Entry(
+            frame, 
+            textvariable=string_var,
+            font=('Arial', 11),
+            bg=self.light_green if valid else self.light_red
+        )
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        browse_button = ColorButton(
+            frame, 
+            text="Browse", 
+            background=self.secondary_color,
+            foreground="white",
+            command=lambda: self._browse_onedrive_path(string_var, entry)
+        )
+        browse_button.pack(side=tk.RIGHT)
 
-    def _browse_onedrive_path(self, string_var):
+    def _browse_onedrive_path(self, string_var, entry_widget=None):
         """Open folder browser and update path variable."""
         folder_path = filedialog.askdirectory(title="Select OneDrive folder")
         if folder_path:
             string_var.set(folder_path)
+            # Update the entry background color if widget was provided
+            if entry_widget:
+                entry_widget.config(bg=self.light_green)
 
     def _update_onedrive_paths(self):
         """Update OneDrive paths in the OneDrivePathManager."""
@@ -5875,18 +6465,16 @@ class ChipTrayExtractor:
             # Create QAQC manager if it doesn't exist
             if not hasattr(self, 'qaqc_manager'):
                 self.qaqc_manager = QAQCManager(self.root, self.file_manager, self)
+                # Make sure to pass the config
+                self.qaqc_manager.config = self.config
                 
-            if not self.qaqc_manager.pending_trays:
-                messagebox.showinfo("No Images", "No images available for review. Process some images first.")
-                return
-                
-            # Start the review process
+            # Start the review process - this will check Temp_Review folder automatically
             self.qaqc_manager.start_review_process()
             
         except Exception as e:
             self.logger.error(f"Error starting image review: {str(e)}")
             messagebox.showerror("Error", f"An error occurred starting the review: {str(e)}")
-
+    
     def _show_file_structure_info(self):
         """Show information about the new file structure."""
         info_message = (
@@ -6212,7 +6800,7 @@ class ChipTrayExtractor:
                     comp_depth_from = depth_from + (i * depth_increment)
                     comp_depth_to = comp_depth_from + depth_increment
                     
-                    # End depth is used as the compartment number (when interval is 1.0)
+                    # End depth is used as the compartment number (when interval is 1)
                     compartment_depth = int(comp_depth_to)
                     
                     if is_blurry := result.get('is_blurry', False):
@@ -6286,6 +6874,21 @@ class ChipTrayExtractor:
             # Update progress
             self.progress_queue.put((f"Processing complete: {successful} successful, {failed} failed", 100))
             
+            # Prompt to start QAQC review if there are successfully processed images
+            if successful > 0 and hasattr(self, 'root') and self.root is not None:
+                def show_qaqc_prompt():
+                    start_review = messagebox.askyesno(
+                        "Processing Complete",
+                        f"Successfully processed {successful} images.\n\nWould you like to start the QAQC review process now?",
+                        parent=self.root
+                    )
+                    if start_review and hasattr(self, 'qaqc_manager'):
+                        self.qaqc_manager.start_review_process()
+                
+                # Use after() to ensure the messagebox appears after GUI updates
+                self.root.after(500, show_qaqc_prompt)
+
+
         except Exception as e:
             self.progress_queue.put((f"Error: {str(e)}", None))
             logger.error(f"Error processing folder: {str(e)}")
@@ -6466,15 +7069,7 @@ class ChipTrayExtractor:
         
         # Ensure TesseractManager has the updated config
         self.tesseract_manager.config = self.config
-        
-        # Inform user about the new file structure
-        message = (f"Files will be saved in organized folders under:\n"
-                f"{self.file_manager.processed_dir}\n\n"
-                f"Do you want to continue?")
-        
-        if not messagebox.askyesno("Centralized File Storage", message):
-            return
-        
+                
         # Clear status
         self.status_text.config(state=tk.NORMAL)
         self.status_text.delete(1.0, tk.END)
@@ -6515,25 +7110,34 @@ class CollapsibleFrame(ttk.Frame):
         """
         ttk.Frame.__init__(self, parent, **kwargs)
         
-        # Create a header frame
-        self.header_frame = ttk.Frame(self)
+        # Define colors
+        self.header_bg = "#EAEAEA"  # Light gray for header
+        self.header_fg = "#333333"  # Dark gray for text
+        
+        # Create a header frame with background
+        self.header_frame = tk.Frame(self, bg=self.header_bg, pady=5, padx=5)
         self.header_frame.pack(fill=tk.X, expand=False)
         
         # Create toggle button with arrow
-        self.toggle_button = ttk.Label(
+        self.toggle_button = tk.Label(
             self.header_frame, 
             text="▼ " if expanded else "▶ ",
-            cursor="hand2"
+            cursor="hand2",
+            bg=self.header_bg,
+            fg=self.header_fg,
+            font=("Arial", 10, "bold")
         )
         self.toggle_button.pack(side=tk.LEFT, padx=(5, 0))
         self.toggle_button.bind("<Button-1>", self.toggle)
         
         # Create header label
-        self.header_label = ttk.Label(
+        self.header_label = tk.Label(
             self.header_frame, 
             text=text,
             cursor="hand2",
-            font=("Arial", 10, "bold")
+            font=("Arial", 11, "bold"),
+            bg=self.header_bg,
+            fg=self.header_fg
         )
         self.header_label.pack(side=tk.LEFT, padx=(5, 0))
         self.header_label.bind("<Button-1>", self.toggle)
@@ -6549,7 +7153,7 @@ class CollapsibleFrame(ttk.Frame):
         self.expanded = expanded
         if expanded:
             self.content_frame.pack(fill=tk.X, expand=True, padx=5, pady=5)
-        
+    
     def toggle(self, event=None):
         """Toggle the expanded/collapsed state."""
         if self.expanded:
@@ -6559,7 +7163,8 @@ class CollapsibleFrame(ttk.Frame):
         else:
             self.content_frame.pack(fill=tk.X, expand=True, padx=5, pady=5)
             self.toggle_button.configure(text="▼ ")
-            self.expanded = True
+            self.expanded = True 
+
 
 class DrillholeTraceGenerator:
     """
@@ -7022,7 +7627,7 @@ class DrillholeTraceGenerator:
         """
         try:
             # Get compartment interval from config
-            compartment_interval = self.config.get('compartment_interval', 1.0)
+            compartment_interval = self.config.get('compartment_interval', 1)
             
             # Try the pattern with any number of digits: HoleID_CC_EndDepth
             match = re.search(r'([A-Za-z]{2}\d{4})_CC_(\d{1,3})(?:\..*)?$', filename)
@@ -8332,7 +8937,7 @@ class DrillholeTraceGenerator:
             self.logger.warning(f"FileManager not available, using fallback directory: {output_dir}")
         
         # Get compartment interval for logging
-        compartment_interval = self.config.get('compartment_interval', 1.0)
+        compartment_interval = self.config.get('compartment_interval', 1)
         
         # Process each hole
         generated_traces = []
@@ -8923,6 +9528,7 @@ class FileManager:
                 self.logger.error(f"Failed to save debug image to fallback location: {str(fallback_error)}")
                 return ""
     
+    # TODO - let the user select the base directory during the first time run on the machine and save it in a config file  in 'Program Resources' - use the TODOs in the script updater to build this...
     def create_base_directories(self) -> None:
         """Create the base directory structure."""
         try:
@@ -8933,7 +9539,7 @@ class FileManager:
             for dir_path in self.dir_structure.values():
                 os.makedirs(dir_path, exist_ok=True)
                 
-            self.logger.info(f"Created base directory structure in {self.base_dir}")
+            self.logger.info(f"Base directory structure: {self.base_dir}")
         except Exception as e:
             self.logger.error(f"Error creating directory structure: {str(e)}")
             raise
