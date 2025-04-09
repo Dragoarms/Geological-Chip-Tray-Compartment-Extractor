@@ -12,14 +12,24 @@ Features:
 - OCR metadata extraction with Tesseract (optional)
 - High-quality image processing to preserve detail
 - Visual debug output showing detection steps
+- Automatic file management for processed images
+- Update checker for new versions of the script
+- Configurable settings for advanced users
+- Support for multiple image formats (PNG, JPG, etc.)
+- Error handling and logging for robust operation
+- Robust QAQC process to ensure high-quality output
+- Ability to selectively process images based on user-defined criteria
+- Automatic Excel register generation for processed images
 
-Author: George Symonds - (using Claude Sonnet 3.7)
+
+Authors: 
+George Symonds - (using Claude Sonnet 3.7)
 
 """
 __version__ = "1.2" 
 
-import certifi
-import ssl 
+import ssl
+import json
 import os
 import sys
 import logging
@@ -38,7 +48,6 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Union, Callable, Set
 import urllib.request
-import tempfile
 
 # Configure logging first
 logging.basicConfig(
@@ -253,7 +262,503 @@ class UpdateChecker:
 
         except Exception as e:
             self.logger.error(f"Update failed: {e}")
-            messagebox.showerror("Update Failed", f"An error occurred while updating:\n{e}")
+            DialogHelper.show_message(self.dialog, "Update Failed", f"An error occurred while updating:\n{e}", message_type="error")
+
+class TranslationManager:
+    """
+    Manages translations for the application.
+    Provides functionality to translate strings and detect system language.
+    """
+    
+    def __init__(self, translations_dict=None):
+        """
+        Initialize the translation manager.
+        
+        Args:
+            translations_dict: Dictionary containing translations for different languages
+        """
+        # Load translations from CSV file if none provided
+        if translations_dict is None:
+            self.translations = self._load_translations_from_csv()
+        else:
+            self.translations = translations_dict
+        
+        self.current_language = "en"  # Default language
+        
+        # Try to detect system language
+        self.detect_system_language()
+    
+    def _load_translations_from_csv(self):
+        """Load translations from CSV file."""
+        translations = {}
+        try:
+            # Try to load from translations.csv in documents
+            csv_data = None
+            
+            # Get the file path using FileManager
+            file_manager = FileManager()
+            # Create the Program Resources directory if it doesn't exist
+            program_resources_dir = os.path.join(file_manager.base_dir, "Program Resources")
+            os.makedirs(program_resources_dir, exist_ok=True)
+            
+            # Path to translations CSV
+            csv_path = os.path.join(program_resources_dir, "translations.csv")
+            
+            # Check if file exists
+            if os.path.exists(csv_path):
+                # Read existing file
+                csv_encoding = 'cp1252'  # Use the encoding from the document metadata
+            else:
+                # If file doesn't exist, try to copy from working directory or resources
+                # Look for translations.csv in current directory or elsewhere
+                possible_paths = [
+                    "translations.csv",
+                    os.path.join(os.path.dirname(__file__), "translations.csv"),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "translations.csv")
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        # Copy file to Program Resources directory
+                        import shutil
+                        shutil.copy2(path, csv_path)
+                        csv_encoding = 'cp1252'
+                        break
+            
+            # Now try to read the CSV file
+            if os.path.exists(csv_path):
+                import csv
+                with open(csv_path, 'r', encoding=csv_encoding) as f:
+                    reader = csv.reader(f)
+                    headers = next(reader)  # Get column headers
+                    
+                    # First column is the key, others are language codes
+                    key_index = 0
+                    language_indices = {}
+                    
+                    # Extract the language codes from headers
+                    for i, header in enumerate(headers):
+                        if i > 0:  # Skip the first column (key)
+                            language_indices[header] = i
+                            translations[header] = {}
+                    
+                    # Read each row and populate translations
+                    for row in reader:
+                        if len(row) > 0:
+                            key = row[key_index]
+                            for lang, index in language_indices.items():
+                                if index < len(row) and row[index]:  # Only add non-empty translations
+                                    translations[lang][key] = row[index]
+            
+            return translations
+            
+        except Exception as e:
+            print(f"Error loading translations: {e}")
+            # Return empty dictionary if there was an error
+            return {}
+    
+    def detect_system_language(self):
+        """Detect system language from locale settings."""
+        try:
+            import locale
+            # Get system platform
+            system = platform.system()
+
+            if system == 'Windows':
+                # Set and get the current locale
+                locale.setlocale(locale.LC_ALL, '')
+                language_code = locale.getlocale()
+                if language_code:  # language_code is a tuple, (language, encoding)
+                    # Extract primary language
+                    lang = language_code[0].split('_')[0].lower() if language_code[0] else None
+                    if lang and lang in self.translations:
+                        self.current_language = lang
+                        return True
+            elif system in ('Darwin', 'Linux'):
+                # Try to get locale from environment variables
+                lang_env = os.environ.get('LANG', '')
+                if lang_env:
+                    lang = lang_env.split('_')[0].lower()
+                    if lang in self.translations:
+                        self.current_language = lang
+                        return True
+        except Exception as e:
+            print(f"Error detecting system language: {e}")
+
+        return False
+    
+    def set_language(self, language_code):
+        """
+        Set the current language.
+        
+        Args:
+            language_code: Language code (e.g., "en", "fr")
+            
+        Returns:
+            bool: True if language was set successfully, False otherwise
+        """
+        if language_code in self.translations:
+            self.current_language = language_code
+            return True
+        return False
+    
+    def get_available_languages(self):
+        """
+        Get list of available languages.
+        
+        Returns:
+            List of language codes
+        """
+        return list(self.translations.keys())
+    
+    def get_language_name(self, language_code):
+        """Get human-readable name for a language code."""
+        language_names = {
+            "en": "English",
+            "fr": "Français",
+            "american": "American English"
+            # Add more language names as needed
+        }
+        return language_names.get(language_code, language_code)
+    
+    def translate(self, text):
+        """
+        Translate text to the current language.
+        
+        Args:
+            text: Text to translate
+            
+        Returns:
+            Translated text or original text if no translation found
+        """
+        # Handle None or empty string
+        if text is None or text == "":
+            return text
+            
+        # Get translation dictionary for current language
+        translations = self.translations.get(self.current_language, {})
+        
+        # Return translation if available, otherwise return original text
+        return translations.get(text, text)
+
+    def t(self, text):
+        """Shorthand method for translate."""
+        return self.translate(text)
+    
+class DialogHelper:
+    """
+    Utility class for creating consistent, properly positioned dialogs
+    that remain on top and correctly capture focus. Includes translation support.
+    """
+    
+    # Class-level translation manager
+    translator = None
+    
+    
+    @classmethod
+    def set_translator(cls, translator):
+        """Set the translation manager."""
+        cls.translator = translator
+    
+    @classmethod
+    def t(cls, text):
+        """Translate text using the class translator."""
+        if cls.translator:
+            return cls.translator.translate(text)
+        return text
+    
+    @staticmethod
+    def create_dialog(parent, title, modal=True, topmost=True, size_ratio=0.8, min_width=400, min_height=300):
+        """
+        Create a properly configured dialog window.
+        
+        Args:
+            parent: Parent window
+            title: Dialog title
+            modal: Whether dialog should be modal
+            topmost: Whether dialog should stay on top
+            size_ratio: Ratio of screen size (0.0-1.0)
+            min_width: Minimum width in pixels
+            min_height: Minimum height in pixels
+            
+        Returns:
+            Configured Toplevel window
+        """
+        dialog = tk.Toplevel(parent)
+        dialog.title(DialogHelper.t(title))
+        
+        # Set window behavior
+        if parent:
+            dialog.transient(parent)  # Make dialog transient to parent
+        
+        if modal:
+            dialog.grab_set()  # Make dialog modal
+        
+        dialog.focus_force()   # Force focus on dialog
+        
+        if topmost:
+            dialog.attributes('-topmost', True)  # Keep on top
+        
+        DialogHelper.center_dialog(dialog, size_ratio, min_width, min_height)        
+        return dialog
+    
+    @staticmethod
+    def create_error_dialog(parent, title, message):
+        """
+        Create a properly configured error dialog.
+        
+        Args:
+            parent: Parent window
+            title: Dialog title
+            message: Error message
+            
+        Returns:
+            Reference to the error dialog
+        """
+        # Create base dialog with appropriate styling for errors
+        dialog = DialogHelper.create_dialog(
+            parent, 
+            DialogHelper.t(title), 
+            modal=True, 
+            topmost=True,
+            size_ratio=0.3,  # Smaller ratio for error dialogs
+            min_width=350,
+            min_height=180
+        )
+        
+        # Create message with error styling
+        message_label = ttk.Label(
+            dialog,
+            text=DialogHelper.t(message),
+            wraplength=300,
+            justify=tk.CENTER,
+            padding=20,
+            foreground="red"  # Error text is red
+        )
+        message_label.pack(expand=True)
+        
+        # Add OK button
+        ok_button = ttk.Button(
+            dialog,
+            text=DialogHelper.t("OK"),
+            command=dialog.destroy
+        )
+        ok_button.pack(pady=(0, 20))
+        
+        # Set focus on the OK button
+        ok_button.focus_set()
+        
+        # Bind Escape and Enter keys to close the dialog
+        dialog.bind("<Return>", lambda e: dialog.destroy())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        
+        return dialog
+
+    @staticmethod
+    def create_message_dialog(parent, title, message, button_text="OK"):
+        """
+        Create a simple message dialog that properly stays on top.
+        
+        Args:
+            parent: Parent window
+            title: Dialog title
+            message: Message to display
+            button_text: Text for the OK button
+            
+        Returns:
+            Dialog window
+        """
+        # Create base dialog
+        dialog = DialogHelper.create_dialog(
+            parent, DialogHelper.t(title), modal=True, topmost=True, 
+            size_ratio=0.4, min_width=300, min_height=150
+        )
+        
+        # Add message
+        ttk.Label(
+            dialog,
+            text=DialogHelper.t(message),
+            wraplength=dialog.winfo_width() - 40,  # Account for padding
+            justify=tk.CENTER,
+            padding=20
+        ).pack(expand=True)
+        
+        # Add OK button
+        ttk.Button(
+            dialog,
+            text=DialogHelper.t(button_text),
+            command=dialog.destroy
+        ).pack(pady=(0, 20))
+        
+        return dialog
+    
+    @staticmethod
+    def show_message(parent, title, message, message_type="info"):
+        """
+        Show a message box that properly appears on top.
+        
+        Args:
+            parent: Parent window
+            title: Dialog title
+            message: Message to display
+            message_type: 'info', 'warning', 'error', 'yesno', or 'question'
+            
+        Returns:
+            Result from messagebox function
+        """
+        # Release any grab that might be active
+        try:
+            for widget in parent.winfo_toplevel().winfo_children():
+                if isinstance(widget, tk.Toplevel) and widget.winfo_exists():
+                    widget.grab_release()
+        except:
+            pass
+        
+        # Make parent topmost temporarily
+        parent.lift()
+        parent.attributes('-topmost', True)
+        parent.update()
+        
+        # Translate texts
+        title = DialogHelper.t(title)
+        message = DialogHelper.t(message)
+        
+        # Select appropriate messagebox function
+        result = None
+        if message_type == "info":
+            result = messagebox.showinfo(title, message, parent=parent)
+        elif message_type == "warning":
+            result = messagebox.showwarning(title, message, parent=parent)
+        elif message_type == "error":
+            result = messagebox.showerror(title, message, parent=parent)
+        elif message_type == "yesno":
+            result = messagebox.askyesno(title, message, parent=parent)
+        elif message_type == "question":
+            result = messagebox.askquestion(title, message, parent=parent)
+        else:
+            result = messagebox.showinfo(title, message, parent=parent)
+        
+        # Reset topmost attribute
+        parent.attributes('-topmost', False)
+        
+        return result
+
+    @staticmethod
+    def confirm_dialog(parent, title, message, yes_text="Yes", no_text="No"):
+        """
+        Show a confirmation dialog with Yes/No buttons.
+        
+        Args:
+            parent: Parent window
+            title: Dialog title
+            message: Message to display
+            yes_text: Text for Yes button
+            no_text: Text for No button
+            
+        Returns:
+            True if Yes was clicked, False otherwise
+        """
+        # Release any grab that might be active
+        try:
+            for widget in parent.winfo_toplevel().winfo_children():
+                if isinstance(widget, tk.Toplevel) and widget.winfo_exists():
+                    widget.grab_release()
+        except:
+            pass
+        
+        # Make parent topmost temporarily
+        parent.lift()
+        parent.attributes('-topmost', True)
+        parent.update()
+        
+        # Create dialog with proper z-order
+        dialog = DialogHelper.create_dialog(
+            parent, 
+            DialogHelper.t(title), 
+            modal=True, 
+            topmost=True,
+            size_ratio=0.3,
+            min_width=350,
+            min_height=180
+        )
+        
+        # Set result variable
+        result = tk.BooleanVar(value=False)
+        
+        # Create message
+        message_label = ttk.Label(
+            dialog,
+            text=DialogHelper.t(message),
+            wraplength=300,
+            justify=tk.CENTER,
+            padding=20
+        )
+        message_label.pack(expand=True, fill=tk.BOTH)
+        
+        # Button frame
+        button_frame = ttk.Frame(dialog, padding=10)
+        button_frame.pack(fill=tk.X)
+        
+        # Yes button
+        yes_button = ttk.Button(
+            button_frame,
+            text=DialogHelper.t(yes_text),
+            command=lambda: [result.set(True), dialog.destroy()]
+        )
+        yes_button.pack(side=tk.LEFT, expand=True, padx=10)
+        
+        # No button
+        no_button = ttk.Button(
+            button_frame,
+            text=DialogHelper.t(no_text),
+            command=lambda: [result.set(False), dialog.destroy()]
+        )
+        no_button.pack(side=tk.RIGHT, expand=True, padx=10)
+        
+        # Set focus on No button by default (safer option)
+        no_button.focus_set()
+        
+        # Handle Enter/Escape keys
+        dialog.bind("<Return>", lambda e: [result.set(True), dialog.destroy()])
+        dialog.bind("<Escape>", lambda e: [result.set(False), dialog.destroy()])
+        
+        # Wait for dialog to close
+        dialog.wait_window()
+        
+        # Reset parent window
+        parent.attributes('-topmost', False)
+        
+        return result.get()
+
+    @staticmethod
+    def center_dialog(dialog, size_ratio=0.8, min_width=400, min_height=300):
+            """
+            Center a dialog on screen and set appropriate size.
+            
+            Args:
+                dialog: Dialog window to center
+                size_ratio: Ratio of screen size to use (0.0-1.0)
+                min_width: Minimum width in pixels
+                min_height: Minimum height in pixels
+            """
+            # Get screen dimensions
+            screen_width = dialog.winfo_screenwidth()
+            screen_height = dialog.winfo_screenheight()
+            
+            # Calculate size based on ratio but ensure minimum size
+            width = max(min_width, int(screen_width * size_ratio))
+            height = max(min_height, int(screen_height * size_ratio))
+            
+            # Make sure size doesn't exceed screen
+            width = min(width, screen_width - 100)
+            height = min(height, screen_height - 100)
+            
+            # Calculate position to center dialog
+            x = (screen_width - width) // 2
+            y = (screen_height - height) // 2
+            
+            # Set geometry
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
 
 
 class TesseractManager:
@@ -369,13 +874,12 @@ class TesseractManager:
         
         # If no parent window, just log the instructions
         if parent is None:
-            logger.info(f"Tesseract OCR not available. {instructions}")
+            logger.info(DialogHelper.t(f"Tesseract OCR not available. {instructions}"))
             return
         
         # Create a custom dialog
         dialog = tk.Toplevel(parent)
-        dialog.title("Tesseract OCR Required")
-        dialog.geometry("500x400")
+        dialog.title(DialogHelper.t("Tesseract OCR Required"))
         dialog.grab_set()  # Make dialog modal
         
         # Add icon and header
@@ -392,7 +896,7 @@ class TesseractManager:
         # Header label
         header_label = ttk.Label(
             header_frame, 
-            text="Tesseract OCR Required for Text Recognition",
+            text=DialogHelper.t("Tesseract OCR Required for Text Recognition"),
             font=("Arial", 12, "bold")
         )
         header_label.pack(pady=10)
@@ -420,14 +924,14 @@ class TesseractManager:
             install_url = self.install_instructions[system].split(' ')[0]
             install_button = ttk.Button(
                 button_frame, 
-                text=f"Download for {system}", 
+                text=DialogHelper.t(f"Download for {system}"), 
                 command=lambda: webbrowser.open(install_url)
             )
             install_button.pack(side=tk.LEFT, padx=5)
         
         close_button = ttk.Button(
             button_frame, 
-            text="Continue without OCR", 
+            text=DialogHelper.t("Continue without OCR"), 
             command=dialog.destroy
         )
         close_button.pack(side=tk.RIGHT, padx=5)
@@ -1002,50 +1506,54 @@ class MetadataInputDialog:
     """
     
     def __init__(self, parent: Optional[tk.Tk], image: Optional[np.ndarray] = None, 
-                metadata: Optional[Dict[str, Any]] = None,
-                tesseract_manager: Optional[Any] = None):
-        """
-        Initialize the metadata input dialog.
-        
-        Args:
-            parent: Parent Tkinter window
-            image: Optional image to display (metadata region)
-            metadata: Optional pre-filled metadata from OCR
-            tesseract_manager: Optional TesseractManager instance for validation
-        """
+             metadata: Optional[Dict[str, Any]] = None,
+             tesseract_manager: Optional[Any] = None,
+             theme_colors: Optional[Dict[str, str]] = None):
+        """Initialize the metadata input dialog."""
         self.parent = parent
         self.image = image
         self.metadata = metadata or {}
         self.tesseract_manager = tesseract_manager
+        self.hole_id = tk.StringVar(value=metadata.get("hole_id", ""))
+        self.depth_from = tk.StringVar(value=str(metadata.get("depth_from", "")))
+        self.depth_to = tk.StringVar(value=str(metadata.get("depth_to", "")))
+        self.theme_colors = theme_colors or {
+            "background": "#1e1e1e",
+            "text": "#e0e0e0",
+            "field_bg": "#2d2d2d",
+            "field_border": "#3f3f3f"
+        }
         
-        # Result values
-        self.hole_id = tk.StringVar(value=self.metadata.get('hole_id', ''))
-        self.depth_from = tk.StringVar(value=str(self.metadata.get('depth_from', '')))
-        self.depth_to = tk.StringVar(value=str(self.metadata.get('depth_to', '')))
-        self.result = None
-        
-        # Create dialog
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title("Enter Chip Tray Metadata")
-        self.dialog.grab_set()  # Make dialog modal
-        
-           # Set dialog to appear on top and maximize it
-        self.dialog.attributes('-topmost', True)
-        self.dialog.state('zoomed')  # This maximizes the window
+        # Create dialog using DialogHelper for consistency
+        self.dialog = DialogHelper.create_dialog(
+            parent=parent,
+            title="Enter Chip Tray Metadata",
+            modal=True,
+            topmost=True
+        )
+
+        style = ttk.Style(self.dialog)
+        style.configure("Dialog.TFrame", background=self.theme_colors["background"])
+        style.configure("Dialog.TLabel", background=self.theme_colors["background"], foreground=self.theme_colors["text"])
+        style.configure("Dialog.TLabelframe", background=self.theme_colors["background"], foreground=self.theme_colors["text"])
+        style.configure("Dialog.TLabelframe.Label", background=self.theme_colors["background"], foreground=self.theme_colors["text"])
+        style.configure("Dialog.TButton", background=self.theme_colors["field_bg"], foreground=self.theme_colors["text"])
+
+
         
         self._create_widgets()
-    
-    def _create_widgets(self) -> None:
+
+    def _create_widgets(self):
         """Create all widgets for the dialog."""
         # Main frame with padding
-        main_frame = ttk.Frame(self.dialog, padding="10")
+        main_frame = ttk.Frame(self.dialog, style="Dialog.TFrame")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
         header_label = ttk.Label(
             main_frame, 
-            text="Enter Chip Tray Metadata",
-            font=("Arial", 12, "bold")
+            text=DialogHelper.t("Enter Chip Tray Metadata"),
+            style="Dialog.TLabel"
         )
         header_label.pack(pady=(0, 10))
         
@@ -1060,26 +1568,27 @@ class MetadataInputDialog:
         # Input fields
         self._add_input_fields(main_frame)
         
-        # Action buttons
+        # Buttons frame
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(10, 0))
         
+        # OK button
         ok_button = ttk.Button(
             button_frame, 
-            text="OK", 
+            text=DialogHelper.t("OK"),  # Translate here
             command=self._on_ok
         )
         ok_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
+        # Cancel button
         cancel_button = ttk.Button(
             button_frame, 
-            text="Cancel", 
+            text=DialogHelper.t("Cancel"),  # Translate here
             command=self._on_cancel
         )
         cancel_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
     
-    
-    
+
     def _add_image_display(self, parent: ttk.Frame) -> None:
         """
         Add image display widget to the dialog with specialized layout for chip tray labels.
@@ -1088,7 +1597,7 @@ class MetadataInputDialog:
             parent: Parent frame to add the widget to
         """
         # Create a frame to hold all images
-        image_frame = ttk.LabelFrame(parent, text="Image Analysis", padding="10")
+        image_frame = ttk.LabelFrame(parent, text=DialogHelper.t("Image Analysis"), padding="10")
         image_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         try:
@@ -1124,7 +1633,7 @@ class MetadataInputDialog:
                     # Add title above image
                     title_label = ttk.Label(
                         item_frame, 
-                        text=item_title,
+                        text=DialogHelper.t(item_title),
                         font=("Arial", 10, "bold")
                     )
                     title_label.pack(pady=(0, 5))
@@ -1172,7 +1681,7 @@ class MetadataInputDialog:
                     # Add dimensions info
                     size_label = ttk.Label(
                         item_frame,
-                        text=f"Original size: {w}x{h} pixels",
+                        text=DialogHelper.t(f"Original size: {w}x{h} pixels"),
                         font=("Arial", 8),
                         foreground="gray"
                     )
@@ -1181,7 +1690,7 @@ class MetadataInputDialog:
             # Add help text
             help_text = ttk.Label(
                 scrollable_frame, 
-                text="Examine these images to verify hole ID and depth range.",
+                text=DialogHelper.t("Examine these images to verify hole ID and depth range."),
                 font=("Arial", 9)
             )
             help_text.pack(pady=10)
@@ -1192,7 +1701,7 @@ class MetadataInputDialog:
             logger.error(traceback.format_exc())
             error_label = ttk.Label(
                 image_frame, 
-                text=f"Error displaying images: {str(e)}",
+                text=DialogHelper.t(f"Error displaying images: {str(e)}"),
                 foreground="red"
             )
             error_label.pack(pady=10)
@@ -1204,7 +1713,7 @@ class MetadataInputDialog:
         Args:
             parent: Parent frame to add the widget to
         """
-        ocr_frame = ttk.LabelFrame(parent, text="OCR Result", padding="10")
+        ocr_frame = ttk.LabelFrame(parent, text=DialogHelper.t("OCR Result"), padding="10")
         ocr_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Display OCR text
@@ -1217,7 +1726,7 @@ class MetadataInputDialog:
         confidence = self.metadata.get('confidence', 0)
         confidence_label = ttk.Label(
             ocr_frame, 
-            text=f"OCR Confidence: {confidence:.1f}%",
+            text=DialogHelper.t(f"OCR Confidence: {confidence:.1f}%"),
             font=("Arial", 9)
         )
         confidence_label.pack(anchor='e', pady=(5, 0))
@@ -1229,7 +1738,7 @@ class MetadataInputDialog:
         Args:
             parent: Parent frame to add the widgets to
         """
-        fields_frame = ttk.LabelFrame(parent, text="Enter Metadata", padding="10")
+        fields_frame = ttk.LabelFrame(parent, style="Dialog.TLabelframe")
         fields_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Hole ID field
@@ -1238,7 +1747,7 @@ class MetadataInputDialog:
         
         hole_id_label = ttk.Label(
             hole_id_frame, 
-            text="Hole ID:",
+            text=DialogHelper.t("Hole ID:"),
             width=10,
             font=("Arial", 12, "bold")  # Larger, bold font
         )
@@ -1247,18 +1756,25 @@ class MetadataInputDialog:
         # Custom font for entry
         custom_font = ("Arial", 14, "bold")  # Even larger, bold font for entry
         
-        hole_id_entry = ttk.Entry(
+        hole_id_entry = tk.Entry(
             hole_id_frame,
             textvariable=self.hole_id,
-            font=custom_font,  # Apply custom font
-            width=15  # Wider field for better visibility
+            font=custom_font,
+            width=15,
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1,
+            relief=tk.FLAT
         )
         hole_id_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         
         # Format help
         hole_id_help = ttk.Label(
             hole_id_frame,
-            text="Format: XX0000",
+            text=DialogHelper.t("Format: XX0000"),
             font=("Arial", 10),  # Slightly larger font for help text
             foreground="gray"
         )
@@ -1270,39 +1786,51 @@ class MetadataInputDialog:
         
         depth_label = ttk.Label(
             depth_frame, 
-            text="Depth:",
+            text=DialogHelper.t("Depth:"),
             width=10,
             font=("Arial", 12, "bold")  # Larger, bold font
         )
         depth_label.pack(side=tk.LEFT)
         
-        depth_from_entry = ttk.Entry(
+        depth_from_entry = tk.Entry(
             depth_frame,
             textvariable=self.depth_from,
             width=8,
-            font=custom_font  # Apply custom font
+            font=custom_font,
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1,
+            relief=tk.FLAT
         )
         depth_from_entry.pack(side=tk.LEFT)
         
         depth_separator = ttk.Label(
             depth_frame, 
-            text="-",
+            text=DialogHelper.t("-"),
             font=custom_font  # Apply same font to separator
         )
         depth_separator.pack(side=tk.LEFT, padx=5)
         
-        depth_to_entry = ttk.Entry(
+        depth_to_entry = tk.Entry(
             depth_frame,
             textvariable=self.depth_to,
             width=8,
-            font=custom_font  # Apply custom font
+            font=custom_font,
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1,
+            relief=tk.FLAT
         )
         depth_to_entry.pack(side=tk.LEFT)
         
         # Format help
         depth_help = ttk.Label(
             depth_frame,
-            text="Format: 0.0-0.0",
+            text=DialogHelper.t("Format: 0.0-0.0"),
             font=("Arial", 10),  # Slightly larger font for help text
             foreground="gray"
         )
@@ -1318,13 +1846,13 @@ class MetadataInputDialog:
             
             # Validate hole ID - must be 2 letters followed by 4 digits
             if not hole_id:
-                messagebox.showerror("Validation Error", "Hole ID is required")
+                DialogHelper.show_message(self.dialog, "Validation Error", "Hole ID is required", message_type="error")
                 return
             
             # Validate hole ID format using regex - 2 letters followed by 4 digits
             if not re.match(r'^[A-Za-z]{2}\d{4}$', hole_id):
-                messagebox.showerror("Validation Error", 
-                                    "Hole ID must be 2 letters followed by 4 digits (e.g., AB1234)")
+                DialogHelper.show_message(self.dialog, "Validation Error", 
+                                    "Hole ID must be 2 letters followed by 4 digits (e.g., AB1234)", message_type="error")
                 return
             
             # Check if the hole ID prefix is in the list of valid prefixes
@@ -1349,12 +1877,12 @@ class MetadataInputDialog:
                     depth_from = float(depth_from_str)
                     # Validate as a whole number
                     if depth_from != int(depth_from):
-                        messagebox.showerror("Validation Error", "Depth From must be a whole number")
+                        DialogHelper.show_message(self.dialog, "Validation Error", "Depth From must be a whole number", message_type="error")
                         return
                     # Convert to integer
                     depth_from = int(depth_from)
                 except ValueError:
-                    messagebox.showerror("Validation Error", "Depth From must be a number")
+                    DialogHelper.show_message(self.dialog, "Validation Error", "Depth From must be a number", message_type="error")
                     return
             
             if depth_to_str:
@@ -1362,18 +1890,18 @@ class MetadataInputDialog:
                     depth_to = float(depth_to_str)
                     # Validate as a whole number
                     if depth_to != int(depth_to):
-                        messagebox.showerror("Validation Error", "Depth To must be a whole number")
+                        DialogHelper.show_message(self.dialog, "Validation Error", "Depth To must be a whole number", message_type="error")
                         return
                     # Convert to integer
                     depth_to = int(depth_to)
                 except ValueError:
-                    messagebox.showerror("Validation Error", "Depth To must be a number")
+                    DialogHelper.show_message(self.dialog, "Validation Error", "Depth To must be a number", message_type="error")
                     return
             
             # Validate that depth_to is greater than depth_from
             if depth_from is not None and depth_to is not None:
                 if depth_to <= depth_from:
-                    messagebox.showerror("Validation Error", "Depth To must be greater than Depth From")
+                    DialogHelper.show_message(self.dialog, "Validation Error", "Depth To must be greater than Depth From", message_type="error")
                     return
                 
                 # Validate that depth intervals are sensible
@@ -1395,7 +1923,7 @@ class MetadataInputDialog:
             
         except Exception as e:
             logger.error(f"Error validating metadata input: {str(e)}")
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            DialogHelper.show_message(self.dialog, "Error", f"An error occurred: {str(e)}", message_type="error")
     
     def _on_cancel(self) -> None:
         """Handle Cancel button click."""
@@ -1405,14 +1933,101 @@ class MetadataInputDialog:
     def show(self) -> Optional[Dict[str, Any]]:
         """
         Show the dialog and wait for user input.
-        
-        Returns:
-            Dictionary with entered metadata or None if canceled
         """
-        # Wait for dialog to be closed
-        self.dialog.wait_window()
+        self.dialog.transient(self.parent)     # Make dialog modal
+        self.dialog.grab_set()                 # Prevent focus from leaving dialog
+        self.dialog.wait_window()              # Block until closed
         return self.result
 
+
+
+
+
+class ModernButton(tk.Frame):
+    def __init__(self, parent, text, color, command, icon=None, theme_colors=None):
+        super().__init__(parent, bg=color, highlightbackground=color, bd=0, cursor="hand2")
+
+        self.default_color = color
+        self.command = command
+        self.enabled = True  # ✅ Make sure it's initialized!
+        self.theme_colors = theme_colors or {}
+
+        label_text = f"{icon} {text}" if icon else text
+        self.label = tk.Label(
+            self,
+            text=label_text,
+            bg=color,
+            fg="white",
+            font=("Arial", 11),
+            padx=15,
+            pady=6,
+            cursor="hand2"
+        )
+        self.label.pack(fill="both", expand=True)
+
+        self.label.bind("<Enter>", self._on_enter)
+        self.label.bind("<Leave>", self._on_leave)
+        self.label.bind("<Button-1>", self._on_click)
+
+    # ✅ Support configure(state=...) safely
+    def configure(self, cnf=None, **kwargs):
+        if "state" in kwargs:
+            self.set_state(kwargs.pop("state"))
+        return super().configure(cnf, **kwargs)
+
+    config = configure  # alias for safety
+
+    def _on_enter(self, event):
+        if self.enabled:
+            hover_color = self._lighten_color(self.default_color, 0.1)
+            self.label.configure(bg=hover_color)
+            self.configure(bg=hover_color)
+
+    def _on_leave(self, event):
+        if self.enabled:
+            self.label.configure(bg=self.default_color)
+            self.configure(bg=self.default_color)
+
+    def _on_click(self, event):
+        if self.enabled and self.command:
+            try:
+                self.command()
+            except Exception as e:
+                print(f"ModernButton Error: {e}")
+
+    def set_state(self, state):
+        self.enabled = (state == "normal")
+        border_color = self.theme_colors.get("field_border", "#888888")
+
+        if not self.enabled:
+            self.label.configure(
+                fg=border_color,
+                bg=self._lighten_color(self.default_color, 0.05),
+                cursor="arrow"
+            )
+            self.configure(
+                bg=self._lighten_color(self.default_color, 0.05),
+                cursor="arrow"
+            )
+        else:
+            self.label.configure(
+                fg="white",
+                bg=self.default_color,
+                cursor="hand2"
+            )
+            self.configure(
+                bg=self.default_color,
+                cursor="hand2"
+            )
+
+    def _lighten_color(self, hex_color, amount=0.1):
+        import colorsys
+        hex_color = hex_color.lstrip("#")
+        r, g, b = [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
+        h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
+        l = min(1, l + amount)
+        r, g, b = colorsys.hls_to_rgb(h, l, s)
+        return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 class ColorButton(tk.Button):
     """Custom button with colored background and bold text."""
@@ -1429,17 +2044,23 @@ class ColorButton(tk.Button):
             command: Button command
             **kwargs: Additional arguments for tk.Button
         """
+        # Set a more reasonable default height and configure proper paddings
+        kwargs.setdefault('height', 1)  # Shorter height
+        kwargs.setdefault('padx', 10)   # Horizontal padding
+        kwargs.setdefault('pady', 2)    # Vertical padding
+        
         super().__init__(
             parent,
-            text=text,
+            text=DialogHelper.t(text),
             background=background,
             foreground=foreground,
-            font=("Arial", 12, "bold"),
+            font=("Arial", 11, "bold"),  # Slightly smaller font
             command=command,
             relief=tk.RAISED,
             borderwidth=2,
             **kwargs
         )
+
 
 
 class QAQCManager:
@@ -1713,9 +2334,6 @@ class QAQCManager:
         # Process the first tray
         self._review_next_tray()
         
-    # TODO - make sure all these dialog popups are brought to focus at the front of the window they're hidden behind the windows currently.
-    # TODO - change the QAQC compartment review - show the original image (whole tray debug 'small' image is fine) on the left wide, the compartment image next and then finally the button frame on the right.
-    # TODO - when the last compartment is reached there's an error - AttributeError: 'QAQCManager' object has no attribute 'approve_button'. Did you mean: 'prev_button'? it needs to trigger the moving the images out of the temp_review folder to the Chip Compartments folder, removing the suffix '_temp' uploading a copy to the Approved images folder and updating the onedrive register. then returning to the main GUI.
     def _review_next_tray(self):
         """Display the next tray for review."""
         if not self.pending_trays:
@@ -1809,7 +2427,7 @@ class QAQCManager:
         
         title_label = ttk.Label(
             title_frame,
-            text=f"QAQC - {hole_id} {depth_from}-{depth_to}",
+            text=DialogHelper.t(f"QAQC - {hole_id} {depth_from}-{depth_to}"),
             font=("Arial", 18, "bold")
         )
         title_label.pack(pady=(0, 5))
@@ -1817,7 +2435,7 @@ class QAQCManager:
         # Progress label (Compartment x/x)
         self.progress_label = ttk.Label(
             title_frame,
-            text=f"Compartment {self.current_compartment_index + 1}/{len(self.current_tray['compartments'])}",
+            text=DialogHelper.t(f"Compartment {self.current_compartment_index + 1}/{len(self.current_tray['compartments'])}"),
             font=("Arial", 14)
         )
         self.progress_label.pack(pady=(0, 10))
@@ -1827,16 +2445,16 @@ class QAQCManager:
         content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Frame 1: Existing compartment image (left side)
-        self.existing_frame = ttk.LabelFrame(content_frame, text="Existing Image", padding=10)
+        self.existing_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("Existing Image"), padding=10)
         self.existing_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
         # Frame 2: Keep Original button
-        self.keep_original_frame = ttk.LabelFrame(content_frame, text="Keep Original", padding=10)
+        self.keep_original_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("Keep Original"), padding=10)
         self.keep_original_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
         keep_original_btn = tk.Button(
             self.keep_original_frame,
-            text="Keep Original",
+            text=DialogHelper.t("Keep Original"),
             background="#ccffcc",  # Pale green
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -1847,17 +2465,17 @@ class QAQCManager:
         keep_original_btn.pack(fill=tk.X, expand=True, padx=5, pady=20)
         
         # Frame 3: New compartment image
-        self.new_frame = ttk.LabelFrame(content_frame, text="New Image", padding=10)
+        self.new_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("New Image"), padding=10)
         self.new_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
         # Frame 4: Status buttons
-        self.status_frame = ttk.LabelFrame(content_frame, text="Compartment Status", padding=10)
+        self.status_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("Compartment Status"), padding=10)
         self.status_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
         
         # Add status buttons in a vertical arrangement
         ok_button = tk.Button(
             self.status_frame,
-            text="OK",
+            text=DialogHelper.t("OK"),
             background="green",
             foreground="white",
             font=("Arial", 12, "bold"),
@@ -1869,7 +2487,7 @@ class QAQCManager:
         
         blurry_button = tk.Button(
             self.status_frame,
-            text="BLURRY",
+            text=DialogHelper.t("BLURRY"),
             background="#ffcccc",  # Pale red
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -1881,7 +2499,7 @@ class QAQCManager:
         
         damaged_button = tk.Button(
             self.status_frame,
-            text="DAMAGED",
+            text=DialogHelper.t("DAMAGED"),
             background="orange",
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -1893,7 +2511,7 @@ class QAQCManager:
         
         missing_button = tk.Button(
             self.status_frame,
-            text="MISSING",
+            text=DialogHelper.t("MISSING"),
             background="black",
             foreground="white",
             font=("Arial", 12, "bold"),
@@ -1910,7 +2528,7 @@ class QAQCManager:
         # Previous button on the right side
         self.prev_button = ttk.Button(
             nav_frame,
-            text="← Previous",
+            text=DialogHelper.t("← Previous"),
             command=self._on_previous
         )
         self.prev_button.pack(side=tk.LEFT, padx=5)
@@ -1948,7 +2566,7 @@ class QAQCManager:
         # Update progress label
         total_compartments = len(self.current_tray['compartments'])
         self.progress_label.config(
-            text=f"Compartment {self.current_compartment_index + 1}/{total_compartments}"
+            text=DialogHelper.t(f"Compartment {self.current_compartment_index + 1}/{total_compartments}")
         )
         
         # Update navigation button state
@@ -1963,7 +2581,7 @@ class QAQCManager:
         # Depth label for new image
         ttk.Label(
             self.new_frame,
-            text=f"Depth: {int(comp_depth_from)}-{int(comp_depth_to)}m",
+            text=DialogHelper.t(f"Depth: {int(comp_depth_from)}-{int(comp_depth_to)}m"),
             font=("Arial", 14, "bold")
         ).pack(pady=(0, 10))
         
@@ -2007,7 +2625,7 @@ class QAQCManager:
                 # Display error if no valid image
                 ttk.Label(
                     self.new_frame,
-                    text="No image available for this compartment",
+                    text=DialogHelper.t("No image available for this compartment"),
                     foreground="red",
                     font=("Arial", 12)
                 ).pack(pady=50)
@@ -2016,7 +2634,7 @@ class QAQCManager:
             # Display error if index out of range
             ttk.Label(
                 self.new_frame,
-                text="Compartment index out of range",
+                text=DialogHelper.t("Compartment index out of range"),
                 foreground="red",
                 font=("Arial", 12)
             ).pack(pady=50)
@@ -2136,7 +2754,7 @@ class QAQCManager:
         except Exception as e:
             self.logger.error(f"Error during approval: {str(e)}")
             self.logger.error(traceback.format_exc())
-            messagebox.showerror("Error", f"An error occurred during approval: {str(e)}")
+            DialogHelper.show_message(self.dialog, "Error", f"An error occurred during approval: {str(e)}", message_type="error")
     
     def _on_reject(self):
         """Handle reject button click."""
@@ -2161,7 +2779,7 @@ class QAQCManager:
             
         except Exception as e:
             self.logger.error(f"Error during rejection: {str(e)}")
-            messagebox.showerror("Error", f"An error occurred during rejection: {str(e)}")
+            DialogHelper.show_message(self.dialog, "Error", f"An error occurred during rejection: {str(e)}", message_type="error")
     
     # TODO - the review triggered by the duplicate handler's selective replacement workflow needs to be reorganised to make more sense - currently it's cutting and jumping in the workflow.
     def _set_status_and_next(self, status):
@@ -2391,10 +3009,9 @@ class QAQCManager:
             
         except Exception as e:
             self.logger.error(f"Error copying to OneDrive: {str(e)}")
-            messagebox.showerror(
+            DialogHelper.show_message(self.dialog, 
                 "Error", 
-                f"Could not copy image to OneDrive approved folder: {str(e)}"
-            )
+                f"Could not copy image to OneDrive approved folder: {str(e)}", message_type="error")
 
     def _copy_original_to_onedrive(self, original_path, hole_id, depth_from, depth_to):
         """
@@ -2460,10 +3077,9 @@ class QAQCManager:
             
         except Exception as e:
             self.logger.error(f"Error copying original file to OneDrive: {str(e)}")
-            messagebox.showerror(
+            DialogHelper.show_message(self.dialog, 
                 "Error", 
-                f"Could not copy original file to OneDrive: {str(e)}"
-            )
+                f"Could not copy original file to OneDrive: {str(e)}", message_type="error")
 
     def _update_excel_register(self):
         """Update the Excel register with the approved compartments."""
@@ -2754,8 +3370,6 @@ class QAQCManager:
         except Exception as e:
             self.logger.error(f"Error reading pending entries file: {str(e)}")
 
-
-
 class OneDrivePathManager:
     """
     Manages finding OneDrive paths for the project.
@@ -2823,11 +3437,33 @@ class OneDrivePathManager:
         chip_tray_folder = self.get_chip_tray_folder_path()
         if not chip_tray_folder:
             return None
-                
-        # Found it or selected it!
-        processed_folder = self._processed_originals_path
-        self.logger.info(f"Found/selected OneDrive Processed Originals folder: {processed_folder}")
-        return processed_folder
+        
+        # Look for the processed originals folder in the standard location
+        processed_folder = os.path.join(chip_tray_folder, "4) Processed Originals")
+        
+        if os.path.exists(processed_folder):
+            self._processed_originals_path = processed_folder
+            self.logger.info(f"Found OneDrive Processed Originals folder: {processed_folder}")
+            return processed_folder
+        
+        # If not found, prompt the user if we have a root
+        if self.root is not None:
+            if messagebox.askyesno(
+                "Folder Not Found",
+                "The 'Processed Originals' folder was not found.\n\nWould you like to browse for it?",
+                icon='warning'
+            ):
+                from tkinter import filedialog
+                selected_path = filedialog.askdirectory(
+                    title="Select Processed Originals folder"
+                )
+                if selected_path:
+                    self._processed_originals_path = selected_path
+                    self.logger.info(f"User selected Processed Originals folder: {selected_path}")
+                    return selected_path
+        
+        self.logger.warning("OneDrive Processed Originals folder not found")
+        return None
 
     def get_chip_tray_folder_path(self) -> Optional[str]:
         """
@@ -2886,10 +3522,9 @@ class OneDrivePathManager:
                     return None
             except Exception as e:
                 self.logger.error(f"Error during folder selection: {str(e)}")
-                messagebox.showerror(
+                DialogHelper.show_message(self.dialog, 
                     "Error", 
-                    f"Could not select Chip Tray Photos folder: {str(e)}"
-                )
+                    f"Could not select Chip Tray Photos folder: {str(e)}", message_type="error")
                 return None
         
         self.logger.warning("OneDrive Chip Tray Photos folder not found and no UI to prompt user")
@@ -2927,6 +3562,34 @@ class OneDrivePathManager:
         if not chip_tray_folder:
             return None
         
+        # Look for the approved folder in the standard location
+        register_folder = os.path.join(chip_tray_folder, "1) Chip Tray Register and Images")
+        approved_folder = os.path.join(register_folder, "Approved Compartment Images")
+        
+        if os.path.exists(approved_folder):
+            self._approved_folder_path = approved_folder
+            self.logger.info(f"Found OneDrive Approved Compartment Images folder: {approved_folder}")
+            return approved_folder
+        
+        # If not found, prompt the user if we have a root
+        if self.root is not None:
+            if messagebox.askyesno(
+                "Folder Not Found",
+                "The 'Approved Compartment Images' folder was not found.\n\nWould you like to browse for it?",
+                icon='warning'
+            ):
+                from tkinter import filedialog
+                selected_path = filedialog.askdirectory(
+                    title="Select Approved Compartment Images folder"
+                )
+                if selected_path:
+                    self._approved_folder_path = selected_path
+                    self.logger.info(f"User selected Approved Compartment Images folder: {selected_path}")
+                    return selected_path
+        
+        self.logger.warning("OneDrive Approved Compartment Images folder not found")
+        return None
+
     def get_register_path(self) -> Optional[str]:
         """
         Get the path to the Excel register in OneDrive.
@@ -2964,10 +3627,9 @@ class OneDrivePathManager:
         register_folder = os.path.join(chip_tray_folder, "1) Chip Tray Register and Images")
         if not os.path.exists(register_folder):
             if self.root is not None:
-                messagebox.showerror(
+                DialogHelper.show_message(self.dialog, 
                     "Folder Not Found", 
-                    "The '1) Chip Tray Register and Images' folder was not found in the Chip Tray Photos folder."
-                )
+                    "The '1) Chip Tray Register and Images' folder was not found in the Chip Tray Photos folder.", message_type="error")
             self.logger.error(f"Required subfolder not found: {register_folder}")
             return None
             
@@ -2977,10 +3639,9 @@ class OneDrivePathManager:
         
         if not os.path.exists(register_path):
             if self.root is not None:
-                messagebox.showerror(
+                DialogHelper.show_message(self.dialog, 
                     "File Not Found", 
-                    f"The '{register_filename}' file was not found in the Chip Tray Register and Images folder."
-                )
+                    f"The '{register_filename}' file was not found in the Chip Tray Register and Images folder.", message_type="error")
             self.logger.error(f"Excel register not found: {register_path}")
             return None
             
@@ -2988,6 +3649,66 @@ class OneDrivePathManager:
         self._register_path = register_path
         self.logger.info(f"Found Excel register: {register_path}")
         return register_path
+
+    def get_drill_traces_path(self) -> Optional[str]:
+        """
+        Get the path to the Drill Traces folder in OneDrive.
+        
+        Returns:
+            Path to the Drill Traces folder, or None if not found
+        """
+        if hasattr(self, '_drill_traces_path') and self._drill_traces_path is not None:
+            # Use the custom path if it's been set
+            if os.path.exists(self._drill_traces_path):
+                return self._drill_traces_path
+            elif self.root is not None:
+                # Prompt user if the custom path doesn't exist
+                if messagebox.askyesno(
+                    "Path Not Found",
+                    f"The custom Drill Traces folder path does not exist: {self._drill_traces_path}\n\n"
+                    "Would you like to browse for the correct location?",
+                    icon='warning'
+                ):
+                    from tkinter import filedialog
+                    selected_path = filedialog.askdirectory(
+                        title="Select Drill Traces folder"
+                    )
+                    if selected_path:
+                        self._drill_traces_path = selected_path
+                        return selected_path
+                    
+        # First make sure we have the Chip Tray Photos folder
+        chip_tray_folder = self.get_chip_tray_folder_path()
+        if not chip_tray_folder:
+            return None
+        
+        # Look for the drill traces folder in the standard location
+        drill_traces_folder = os.path.join(chip_tray_folder, "3) Drillhole Traces")
+        
+        if os.path.exists(drill_traces_folder):
+            self._drill_traces_path = drill_traces_folder
+            self.logger.info(f"Found OneDrive Drill Traces folder: {drill_traces_folder}")
+            return drill_traces_folder
+        
+        # If not found, prompt the user if we have a root
+        if self.root is not None:
+            if messagebox.askyesno(
+                "Folder Not Found",
+                "The 'Drill Traces' folder was not found.\n\nWould you like to browse for it?",
+                icon='warning'
+            ):
+                from tkinter import filedialog
+                selected_path = filedialog.askdirectory(
+                    title="Select Drill Traces folder"
+                )
+                if selected_path:
+                    self._drill_traces_path = selected_path
+                    self.logger.info(f"User selected Drill Traces folder: {selected_path}")
+                    return selected_path
+        
+        self.logger.warning("OneDrive Drill Traces folder not found")
+        return None
+
 
 
 class DuplicateHandler:
@@ -3331,9 +4052,21 @@ class DuplicateHandler:
         dialog = tk.Toplevel()
         dialog.title("Duplicate Entry Detected")
         
-        # Set dialog to appear on top and maximize it
-        dialog.attributes('-topmost', True)
-        dialog.state('zoomed')  # This maximizes the window
+        # Make dialog modal and keep on top
+        dialog.transient(self.root)  # Make it a transient window of the parent
+        dialog.grab_set()            # Make it modal
+        dialog.focus_force()         # Force focus
+        dialog.attributes('-topmost', True)  # Keep on top
+        
+        # Size appropriately based on screen
+        screen_width = dialog.winfo_screenwidth()
+        screen_height = dialog.winfo_screenheight()
+        width = int(screen_width * 0.8)
+        height = int(screen_height * 0.8)
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
         
         # Store the result as a class attribute of the dialog for retrieval later
         dialog.result = None
@@ -3366,7 +4099,7 @@ class DuplicateHandler:
         # Main title
         title_label = ttk.Label(
             title_frame,
-            text=f"{hole_id} - {int(depth_from)}-{int(depth_to)}m",
+            text=DialogHelper.t(f"{hole_id} - {int(depth_from)}-{int(depth_to)}m"),
             font=("Arial", 18, "bold")
         )
         title_label.pack(pady=(0, 5))
@@ -3379,14 +4112,14 @@ class DuplicateHandler:
         
         duplicate_label = ttk.Label(
             title_frame,
-            text=duplicate_text,
+            text=DialogHelper.t(duplicate_text),
             font=("Arial", 14)
         )
         duplicate_label.pack(pady=(0, 10))
         
         # Add a frame to show existing compartments side by side
         if duplicate_count > 0:
-            compartments_frame = ttk.LabelFrame(main_frame, text="Existing Compartments", padding=5)
+            compartments_frame = ttk.LabelFrame(main_frame, text=DialogHelper.t("Existing Compartments"), padding=5)
             compartments_frame.pack(fill=tk.X, pady=(0, 10))
             
             # Create a horizontal container for compartments
@@ -3444,7 +4177,7 @@ class DuplicateHandler:
                             self.logger.error(f"Error loading compartment image: {str(e)}")
                             ttk.Label(
                                 comp_frame,
-                                text="Error loading image",
+                                text=DialogHelper.t("Error loading image"),
                                 foreground="red"
                             ).pack()
             except Exception as e:
@@ -3456,7 +4189,7 @@ class DuplicateHandler:
             
             keep_original_btn = tk.Button(
                 keep_original_frame,
-                text="Keep Original",
+                text=DialogHelper.t("Keep Original"),
                 background="#ccffcc",  # Pale green
                 foreground="black",
                 font=("Arial", 12, "bold"),
@@ -3467,7 +4200,7 @@ class DuplicateHandler:
             keep_original_btn.pack(anchor="center")  # Center the button
             
             # Add a frame for the current image AFTER the Keep Original button
-            current_frame = ttk.LabelFrame(main_frame, text="Current Image", padding=10)
+            current_frame = ttk.LabelFrame(main_frame, text=DialogHelper.t("Current Image"), padding=10)
             current_frame.pack(fill=tk.X, pady=(0, 20))
         
         # Display current image
@@ -3500,7 +4233,7 @@ class DuplicateHandler:
             self.logger.error(f"Error displaying current image: {str(e)}")
             ttk.Label(
                 current_frame,
-                text=f"Error displaying current image: {str(e)}",
+                text=DialogHelper.t(f"Error displaying current image: {str(e)}"),
                 foreground="red"
             ).pack(pady=10)
         
@@ -3517,7 +4250,7 @@ class DuplicateHandler:
         # Create metadata editor fields
         ttk.Label(
             metadata_frame,
-            text="Edit Metadata:",
+            text=DialogHelper.t("Edit Metadata:"),
             font=("Arial", 10, "bold")
         ).pack(anchor="w", pady=(10, 5))
         
@@ -3525,14 +4258,14 @@ class DuplicateHandler:
         hole_id_frame = ttk.Frame(metadata_frame)
         hole_id_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(hole_id_frame, text="Hole ID:", width=15).pack(side=tk.LEFT)
+        ttk.Label(hole_id_frame, text=DialogHelper.t("HoleID:"), width=15).pack(side=tk.LEFT)
         ttk.Entry(hole_id_frame, textvariable=modified_metadata['hole_id'], width=20).pack(side=tk.LEFT, padx=5)
         
         # Depth fields
         depth_frame = ttk.Frame(metadata_frame)
         depth_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(depth_frame, text="Depth Range:", width=15).pack(side=tk.LEFT)
+        ttk.Label(depth_frame, text=DialogHelper.t("Depth Range:"), width=15).pack(side=tk.LEFT)
         ttk.Entry(depth_frame, textvariable=modified_metadata['depth_from'], width=10).pack(side=tk.LEFT, padx=5)
         ttk.Label(depth_frame, text="-").pack(side=tk.LEFT)
         ttk.Entry(depth_frame, textvariable=modified_metadata['depth_to'], width=10).pack(side=tk.LEFT, padx=5)
@@ -3571,19 +4304,28 @@ class DuplicateHandler:
                     error_dialog = tk.Toplevel(dialog)
                     error_dialog.title("Validation Error")
                     error_dialog.transient(dialog)  # Make it a child of the duplicate dialog
-                    error_dialog.grab_set()  # Make it modal
-                    error_dialog.focus_set()  # Give it focus
-                    error_dialog.attributes('-topmost', True)
+                    error_dialog.grab_set()         # Make it modal
+                    error_dialog.focus_force()      # Give it focus
+                    error_dialog.attributes('-topmost', True)  # Keep on top
+                    
+                    # Center on screen
+                    window_width = 300
+                    window_height = 150
+                    screen_width = error_dialog.winfo_screenwidth()
+                    screen_height = error_dialog.winfo_screenheight()
+                    x = (screen_width - window_width) // 2
+                    y = (screen_height - window_height) // 2
+                    error_dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
                     
                     ttk.Label(
                         error_dialog,
-                        text="Hole ID is required",
+                        text=DialogHelper.t("Hole ID is required"),
                         padding=20
                     ).pack()
                     
                     ttk.Button(
                         error_dialog,
-                        text="OK",
+                        text=DialogHelper.t("OK"),
                         command=error_dialog.destroy
                     ).pack(pady=10)
                     
@@ -3608,14 +4350,14 @@ class DuplicateHandler:
                         
                         ttk.Label(
                             error_dialog,
-                            text="Hole ID must be 2 uppercase letters followed by 4 digits (e.g., AB1234)",
+                            text=DialogHelper.t("Hole ID must be 2 uppercase letters followed by 4 digits (e.g., AB1234)"),
                             padding=20,
                             wraplength=300
                         ).pack()
                         
                         ttk.Button(
                             error_dialog,
-                            text="OK",
+                            text=DialogHelper.t("OK"),
                             command=error_dialog.destroy
                         ).pack(pady=10)
                         
@@ -3641,14 +4383,14 @@ class DuplicateHandler:
                                 
                                 ttk.Label(
                                     error_dialog,
-                                    text=f"The prefix '{prefix}' is not in the list of valid prefixes: {', '.join(valid_prefixes)}.",
+                                    text=DialogHelper.t(f"The prefix '{prefix}' is not in the list of valid prefixes: {', '.join(valid_prefixes)}."),
                                     padding=20,
                                     wraplength=300
                                 ).pack()
                                 
                                 ttk.Button(
                                     error_dialog,
-                                    text="OK",
+                                    text=DialogHelper.t("OK"),
                                     command=error_dialog.destroy
                                 ).pack(pady=10)
                                 
@@ -3675,13 +4417,13 @@ class DuplicateHandler:
                             
                             ttk.Label(
                                 error_dialog,
-                                text="Depth From must be a whole number",
+                                text=DialogHelper.t("Depth From must be a whole number"),
                                 padding=20
                             ).pack()
                             
                             ttk.Button(
                                 error_dialog,
-                                text="OK",
+                                text=DialogHelper.t("OK"),
                                 command=error_dialog.destroy
                             ).pack(pady=10)
                             
@@ -3701,13 +4443,13 @@ class DuplicateHandler:
                         
                         ttk.Label(
                             error_dialog,
-                            text="Depth From must be a number",
+                            text=DialogHelper.t("Depth From must be a number"),
                             padding=20
                         ).pack()
                         
                         ttk.Button(
                             error_dialog,
-                            text="OK",
+                            text=DialogHelper.t("OK"),
                             command=error_dialog.destroy
                         ).pack(pady=10)
                         
@@ -3730,13 +4472,13 @@ class DuplicateHandler:
                             
                             ttk.Label(
                                 error_dialog,
-                                text="Depth To must be a whole number",
+                                text=DialogHelper.t("Depth To must be a whole number"),
                                 padding=20
                             ).pack()
                             
                             ttk.Button(
                                 error_dialog,
-                                text="OK",
+                                text=DialogHelper.t("OK"),
                                 command=error_dialog.destroy
                             ).pack(pady=10)
                             
@@ -3756,13 +4498,13 @@ class DuplicateHandler:
                         
                         ttk.Label(
                             error_dialog,
-                            text="Depth To must be a number",
+                            text=DialogHelper.t("Depth To must be a number"),
                             padding=20
                         ).pack()
                         
                         ttk.Button(
                             error_dialog,
-                            text="OK",
+                            text=DialogHelper.t("OK"),
                             command=error_dialog.destroy
                         ).pack(pady=10)
                         
@@ -3783,13 +4525,13 @@ class DuplicateHandler:
                         
                         ttk.Label(
                             error_dialog,
-                            text="Depth To must be greater than Depth From",
+                            text=DialogHelper.t("Depth To must be greater than Depth From"),
                             padding=20
                         ).pack()
                         
                         ttk.Button(
                             error_dialog,
-                            text="OK",
+                            text=DialogHelper.t("OK"),
                             command=error_dialog.destroy
                         ).pack(pady=10)
                         
@@ -3809,14 +4551,14 @@ class DuplicateHandler:
                         
                         ttk.Label(
                             error_dialog,
-                            text=f"Depth range ({depth_from}-{depth_to}) is too large. Maximum range is 40m.",
+                            text=DialogHelper.t(f"Depth range ({depth_from}-{depth_to}) is too large. Maximum range is 40m."),
                             padding=20,
                             wraplength=300
                         ).pack()
                         
                         ttk.Button(
                             error_dialog,
-                            text="OK",
+                            text=DialogHelper.t("OK"),
                             command=error_dialog.destroy
                         ).pack(pady=10)
                         
@@ -3847,14 +4589,14 @@ class DuplicateHandler:
                 
                 ttk.Label(
                     error_dialog,
-                    text=f"An error occurred: {str(e)}",
+                    text=DialogHelper.t(f"An error occurred: {str(e)}"),
                     padding=20,
                     wraplength=300
                 ).pack()
                 
                 ttk.Button(
                     error_dialog,
-                    text="OK",
+                    text=DialogHelper.t("OK"),
                     command=error_dialog.destroy
                 ).pack(pady=10)
                 
@@ -3887,7 +4629,7 @@ class DuplicateHandler:
             # Title
             ttk.Label(
                 help_frame,
-                text="Duplicate Handling Options",
+                text=DialogHelper.t("Duplicate Handling Options"),
                 font=("Arial", 14, "bold")
             ).pack(pady=(0, 20))
             
@@ -3898,14 +4640,14 @@ class DuplicateHandler:
                 
                 ttk.Label(
                     option_frame,
-                    text=button_name + ":",
+                    text=DialogHelper.t(button_name + ":"),
                     font=("Arial", 12, "bold"),
                     width=20
                 ).pack(side=tk.LEFT, anchor="nw")
                 
                 ttk.Label(
                     option_frame,
-                    text=explanation,
+                    text=DialogHelper.t(explanation),
                     wraplength=400,
                     justify=tk.LEFT
                 ).pack(side=tk.LEFT, padx=10, fill=tk.X)
@@ -3913,7 +4655,7 @@ class DuplicateHandler:
             # Close button
             ttk.Button(
                 help_frame,
-                text="Close",
+                text=DialogHelper.t("Close"),
                 command=help_dialog.destroy
             ).pack(pady=20)
             
@@ -3932,7 +4674,7 @@ class DuplicateHandler:
         # Keep Original button
         keep_button = tk.Button(
             buttons_container,
-            text="Keep Original",
+            text=DialogHelper.t("Keep Original"),
             background="#ccffcc",  # Pale green
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -3945,7 +4687,7 @@ class DuplicateHandler:
         # Selective Replace button
         selective_button = tk.Button(
             buttons_container,
-            text="Selective Replace",
+            text=DialogHelper.t("Selective Replace"),
             background="#d8aefb",  # Light purple
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -3958,7 +4700,7 @@ class DuplicateHandler:
         # Modify Metadata button
         modify_button = tk.Button(
             buttons_container,
-            text="Modify Metadata",
+            text=DialogHelper.t("Modify Metadata"),
             background="#ffddaa",  # Light orange
             foreground="black",
             font=("Arial", 12, "bold"),
@@ -3984,7 +4726,7 @@ class DuplicateHandler:
         # Add Apply button for metadata editor (initially hidden)
         apply_button = ttk.Button(
             metadata_frame,
-            text="Apply Metadata Changes",
+            text=DialogHelper.t("Apply Metadata Changes"),
             command=on_apply_metadata
         )
         apply_button.pack(anchor="e", pady=10)
@@ -4049,19 +4791,31 @@ class ChipTrayExtractor:
         # Initialize visualization cache for dialogs
         self.visualization_cache = {}
 
-        # Initialize Tesseract manager
-        self.tesseract_manager = TesseractManager()
-        self.tesseract_manager.extractor = self  # Give it access to visualization_cache
-
+        
         # Initialize File Manager
         self.file_manager = FileManager()
+
+
+        # Initialize UpdateChecker
+        self.update_checker = UpdateChecker()
+
+         # Initialize translation system
+        self.translator = TranslationManager()
+        
+        # Load saved language preference
+        self._load_language_preference()
+        
+        # Initialize DialogHelper with our translator
+        DialogHelper.set_translator(self.translator)
+
+        # Tesseract manager needs access to translations
+        self.tesseract_manager = TesseractManager()
+        self.tesseract_manager.extractor = self  # Give it access to visualization_cache
 
         # Don't initialize DuplicateHandler yet - it requires an output_dir
         # that is only known when processing an actual image
         self.duplicate_handler = None  # Will be initialized as needed
         
-        # Initialize UpdateChecker
-        self.update_checker = UpdateChecker()
 
         # Configuration settings (these can be modified via the GUI)
         self.config = {
@@ -4126,6 +4880,49 @@ class ChipTrayExtractor:
             file_manager=self.file_manager  # Pass the FileManager instance
         )
 
+    
+    def _load_language_preference(self):
+        """Load language preference from config file."""
+        try:
+            config_path = os.path.join(self.file_manager.base_dir, "Program Resources", "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    if 'language' in config:
+                        self.translator.set_language(config['language'])
+                        self.logger.info(f"Loaded language preference: {config['language']}")
+        except Exception as e:
+            self.logger.error(f"Error loading language preference: {str(e)}")
+
+    def _save_language_preference(self, language_code):
+        """Save language preference to config file."""
+        try:
+            config_dir = os.path.join(self.file_manager.base_dir, "Program Resources")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "config.json")
+            
+            # Load existing config if it exists
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+            
+            # Update language setting
+            config['language'] = language_code
+            
+            # Save updated config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
+            
+            self.logger.info(f"Saved language preference: {language_code}")
+        except Exception as e:
+            self.logger.error(f"Error saving language preference: {str(e)}")
+
+    def t(self, text):
+        """Translate text using the translator."""
+        if hasattr(self, 'translator'):
+            return self.translator.translate(text)
+        return text
 
     def select_folder(self) -> Optional[str]:
         """Open folder picker dialog and return selected folder path."""
@@ -4133,29 +4930,6 @@ class ChipTrayExtractor:
         root.withdraw()  # Hide the main window
         folder_path = filedialog.askdirectory(title="Select folder with chip tray photos")
         return folder_path if folder_path else None
-
-    
-    def get_debug_dir(self, base_path: str) -> str:
-        """
-        Get the path to the debug directory based on output settings.
-        
-        Args:
-            base_path: Base path of the input file or directory
-            
-        Returns:
-            Path to the debug directory
-        """
-        # Always use the FileManager's debug directory structure
-        if hasattr(self, 'file_manager'):
-            return self.file_manager.dir_structure["debug_images"]
-        
-        # Log a warning if FileManager is not available (this should rarely happen)
-        logger.warning("FileManager not available for debug directory. Using temporary location.")
-        
-        # Use a specific temp directory instead of creating one in the input folder
-        temp_debug_dir = os.path.join(os.path.expanduser("~"), "TempChipTrayDebug")
-        os.makedirs(temp_debug_dir, exist_ok=True)
-        return temp_debug_dir
 
     def _handle_metadata_dialog_on_main_thread(self, ocr_metadata: Dict[str, Any], 
                                             result_queue: queue.Queue) -> None:
@@ -4237,10 +5011,13 @@ class ChipTrayExtractor:
             # Create dialog with both metadata_region and metadata_region_viz
             dialog = MetadataInputDialog(
                 parent=self.root,
-                image=ocr_metadata.get('metadata_region_viz'),  # Pass the visualization image
+                image=ocr_metadata.get('metadata_region_viz'),
                 metadata=ocr_metadata,
-                tesseract_manager=self.tesseract_manager  # Pass the TesseractManager
+                tesseract_manager=self.tesseract_manager,
+                theme_colors=self.theme_colors
             )
+
+
             
             # Show dialog and get result
             result = dialog.show()
@@ -4397,7 +5174,6 @@ class ChipTrayExtractor:
                 result_images.append(image)
         
         return result_images
-
 
     def improve_aruco_detection(self, image: np.ndarray) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
         """
@@ -4976,7 +5752,6 @@ class ChipTrayExtractor:
         except Exception as e:
             logger.error(f"Error moving processed image {source_path}: {str(e)}")
             return None
-
 
     def process_image(self, image_path: str) -> bool:
         """
@@ -5561,7 +6336,6 @@ class ChipTrayExtractor:
             self.metadata = {}
             return False
 
-
     ############################################################################
     def process_folder(self, folder_path: str) -> Tuple[int, int]:
         """
@@ -5726,7 +6500,7 @@ class ChipTrayExtractor:
             
             # Check if the directory exists
             if not os.path.exists(compartment_dir):
-                messagebox.showerror("Error", f"Compartment directory not found: {compartment_dir}")
+                DialogHelper.show_message(self.dialog, "Error", f"Compartment directory not found: {compartment_dir}", message_type="error")
                 return
 
             # Select CSV file
@@ -5749,7 +6523,7 @@ class ChipTrayExtractor:
             # Let user select optional columns 
             csv_columns = trace_generator.get_csv_columns(csv_path)
             if not csv_columns:
-                messagebox.showerror("CSV Error", "Could not read columns from CSV.")
+                DialogHelper.show_message(self.dialog, "CSV Error", "Could not read columns from CSV.", message_type="error")
                 return
 
             selected_columns = trace_generator.select_csv_columns(csv_columns)
@@ -5809,63 +6583,140 @@ class ChipTrayExtractor:
             else:
                 messagebox.showwarning("No Output", "No drillhole trace images were generated.")
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            DialogHelper.show_message(self.dialog, "Error", f"An error occurred: {str(e)}", message_type="error")
             logger.error(f"Error in on_generate_trace: {str(e)}")
             logger.error(traceback.format_exc())
             
     
 
     def create_gui(self):
-        """Create a GUI for chip tray extraction with enhanced status display."""
+        """Create a GUI for chip tray extraction with theme support and proper frame layout."""
         self.root = tk.Tk()
-        self.root.title("Chip Tray Extractor")
-        # Maximize the main window on startup
-        self.root.state('zoomed')  # This works on Windows
+        self.root.title(self.t("Chip Tray Extractor"))
+
         
-        # Set custom font sizes
-        default_font = ('Arial', 11)
-        header_font = ('Arial', 14, 'bold')
-        title_font = ('Arial', 16, 'bold')
+        # Define theme colors for dark and light themes
+        self.theme_modes = {
+            "dark": {
+                "background": "#1e1e1e",          # Dark background
+                "secondary_bg": "#252526",        # Slightly lighter background for contrast
+                "text": "#e0e0e0",                # Light text
+                "accent_blue": "#3a7ca5",         # Muted blue accent
+                "accent_green": "#4a8259",        # Muted green accent
+                "accent_red": "#9e4a4a",          # Muted red for quit button
+                "field_bg": "#2d2d2d",            # Form field background
+                "field_border": "#3f3f3f",        # Form field border
+                "hover_highlight": "#3a3a3a",     # Highlight color for hover effects
+                "accent_error": "#5c2d2d",        # Light red for error/invalid state
+                "accent_valid": "#2d5c2d",        # Light green for valid state
+                "checkbox_bg": "#353535",         # Checkbox background
+                "checkbox_fg": "#4a8259",         # Checkbox foreground when checked
+                "progress_bg": "#252526",         # Progress bar background
+                "progress_fg": "#4a8259",         # Progress bar foreground
+                "menu_bg": "#252526",             # Menu background
+                "menu_fg": "#e0e0e0",             # Menu text
+                "menu_active_bg": "#3a7ca5",      # Menu active background
+                "menu_active_fg": "#ffffff",      # Menu active text
+                "border": "#3f3f3f",              # Border color
+                "separator": "#3f3f3f"            # Separator color
+            },
+            "light": {
+                "background": "#f5f5f5",          # Light background
+                "secondary_bg": "#e8e8e8",        # Slightly darker background for contrast
+                "text": "#333333",                # Dark text
+                "accent_blue": "#4a90c0",         # Blue accent
+                "accent_green": "#5aa06c",        # Green accent
+                "accent_red": "#c05a5a",          # Red for quit button
+                "field_bg": "#ffffff",            # Form field background
+                "field_border": "#cccccc",        # Form field border
+                "hover_highlight": "#dddddd",     # Highlight color for hover effects
+                "accent_error": "#ffebeb",        # Light red for error/invalid state
+                "accent_valid": "#ebffeb",        # Light green for valid state
+                "checkbox_bg": "#ffffff",         # Checkbox background
+                "checkbox_fg": "#5aa06c",         # Checkbox foreground when checked
+                "progress_bg": "#e8e8e8",         # Progress bar background
+                "progress_fg": "#5aa06c",         # Progress bar foreground
+                "menu_bg": "#f0f0f0",             # Menu background
+                "menu_fg": "#333333",             # Menu text
+                "menu_active_bg": "#4a90c0",      # Menu active background
+                "menu_active_fg": "#ffffff",      # Menu active text
+                "border": "#cccccc",              # Border color
+                "separator": "#dddddd"            # Separator color
+            }
+        }
         
-        # Configure styles
-        style = ttk.Style()
-        style.configure('TLabel', font=default_font)
-        style.configure('TButton', font=default_font)
-        style.configure('TCheckbutton', font=default_font)
-        style.configure('TEntry', font=default_font)
-        style.configure('Header.TLabel', font=header_font)
-        style.configure('Title.TLabel', font=title_font)
+        # Set the initial theme (dark by default)
+        self.current_theme = "dark"
+        self.theme_colors = self.theme_modes[self.current_theme]
         
-        # Define theme colors
-        self.primary_color = "#6CC744"  # Green
-        self.secondary_color = "#00AEC7"  # Blue
-        self.light_green = "#E5F7E0"  # Light green for valid fields
-        self.light_red = "#FFE0E0"  # Light red for invalid fields
+        # Configure window size and position it center screen
+        window_width = min(1200, self.root.winfo_screenwidth() - 100)
+        window_height = min(900, self.root.winfo_screenheight() - 100)
         
-        # Create a scrollable canvas for the main content
-        canvas_frame = ttk.Frame(self.root)
-        canvas_frame.pack(fill=tk.BOTH, expand=True)
+        # Calculate position for center of screen
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x_position = (screen_width - window_width) // 2
+        y_position = (screen_height - window_height) // 2
         
-        # Create canvas with scrollbar
-        canvas = tk.Canvas(canvas_frame)
-        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        # Set geometry: width x height + x_position + y_position
+        self.root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
+        
+        # Configure the theme for root window
+        self.root.configure(bg=self.theme_colors["background"])
+        
+        # Configure ttk styles for the current theme
+        self.configure_styles()
+        
+        # Create the main container with three distinct sections
+        # 1. Header frame (fixed at top)
+        # 2. Content frame (scrollable, main content)
+        # 3. Footer frame (fixed at bottom, action buttons)
+        
+        # Main container fills the window
+        main_container = ttk.Frame(self.root, style='Main.TFrame')
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # 1. Header frame - thin title at top
+        header_frame = ttk.Frame(main_container, style='Header.TFrame', height=40)
+        header_frame.pack(fill=tk.X, side=tk.TOP)
+        
+        # Title label in header
+        title_label = ttk.Label(
+            header_frame, 
+            text=self.t("Chip Tray Extractor"),
+            style='Title.TLabel'
+        )
+        title_label.pack(pady=8)
+        
+        # 2. Content frame - scrollable main area
+        content_outer_frame = ttk.Frame(main_container, style='Content.TFrame')
+        content_outer_frame.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+        
+        # Create canvas with scrollbar for scrollable content
+        canvas = tk.Canvas(
+            content_outer_frame, 
+            bg=self.theme_colors["background"],
+            highlightthickness=0  # Remove border
+        )
+        scrollbar = ttk.Scrollbar(content_outer_frame, orient="vertical", command=canvas.yview)
         
         # Configure canvas
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Create a frame inside the canvas for the content
-        main_frame = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=main_frame, anchor="nw", tags="main_frame")
+        # Frame inside canvas for content
+        content_frame = ttk.Frame(canvas, style='Content.TFrame', padding=15)
+        canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw", tags="content_frame")
         
         # Configure canvas scrolling
         def configure_canvas(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.itemconfigure("main_frame", width=event.width)
+            canvas.itemconfigure("content_frame", width=event.width)
         
-        main_frame.bind("<Configure>", configure_canvas)
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure("main_frame", width=e.width))
+        content_frame.bind("<Configure>", configure_canvas)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure("content_frame", width=e.width))
         
         # Enable mousewheel scrolling
         def _on_mousewheel(event):
@@ -5873,213 +6724,375 @@ class ChipTrayExtractor:
         
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
-        # Set up the main frame with padding
-        content_frame = ttk.Frame(main_frame, padding="20")
-        content_frame.pack(fill=tk.BOTH, expand=True)
+        # 3. Footer frame - fixed at bottom
+        footer_frame = ttk.Frame(main_container, style='Footer.TFrame', height=100)
+        footer_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=10)
         
-        # Title
-        title_label = ttk.Label(content_frame, text="Chip Tray Extractor", style='Title.TLabel')
-        title_label.pack(pady=(0, 15))
-
-        # Input frame - always expanded
-        input_frame = ttk.LabelFrame(content_frame, text="Input", padding=10)
+        # ----- Content Frame Elements -----
+        
+        # Input section - Standard frame (not collapsible)
+        input_frame = ttk.Frame(content_frame, style='Section.TFrame', padding=10)
         input_frame.pack(fill=tk.X, pady=(0, 10))
         
-        folder_frame = ttk.Frame(input_frame)
-        folder_frame.pack(fill=tk.X)
+        # Input folder field
+        folder_frame = ttk.Frame(input_frame, style='Content.TFrame')
+        folder_frame.pack(fill=tk.X, pady=5)
         
-        folder_label = ttk.Label(folder_frame, text="Input Folder:", width=15, anchor='w')
+        folder_label = ttk.Label(
+            folder_frame, 
+            text=self.t("Input Folder:"), 
+            width=20, 
+            anchor='w',
+            style='Content.TLabel'
+        )
         folder_label.pack(side=tk.LEFT)
         
-        # Custom styled entry with background color based on content
+        # Custom styled entry for input folder
         self.folder_var = tk.StringVar()
-        self.folder_entry = tk.Entry(folder_frame, textvariable=self.folder_var, 
-                                font=default_font, bg=self.light_red)
+        self.folder_entry = tk.Entry(
+            folder_frame, 
+            textvariable=self.folder_var, 
+            font=('Arial', 10),
+            bg=self.theme_colors["accent_error"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
         self.folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         # Update entry background color when text changes
         def update_folder_color(*args):
-            if self.folder_var.get():
-                self.folder_entry.config(bg=self.light_green)
+            folder_path = self.folder_var.get()
+            if folder_path and os.path.isdir(folder_path):
+                # Check if directory contains image files
+                has_images = any(f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif', '.tiff')) 
+                                for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f)))
+                
+                if has_images:
+                    self.folder_entry.config(bg=self.theme_colors["accent_valid"])
+                    # Make browse button less prominent once valid folder selected
+                    browse_button.configure(background=self.theme_colors["accent_blue"])
+                else:
+                    self.folder_entry.config(bg=self.theme_colors["accent_error"])
             else:
-                self.folder_entry.config(bg=self.light_red)
+                self.folder_entry.config(bg=self.theme_colors["accent_error"])
         
         self.folder_var.trace_add("write", update_folder_color)
         
-        # Styled browse button
+        # Browse button - more prominent initially
         browse_button = ColorButton(
             folder_frame, 
-            text="Browse", 
-            background=self.secondary_color,
+            text=self.t("Browse"),
+            background="#5aa06c",  # Always use a bright color for visibility
             foreground="white",
             command=self.browse_folder
         )
         browse_button.pack(side=tk.RIGHT)
         
-        # Add compartment interval setting
-        interval_frame = ttk.Frame(input_frame)
-        interval_frame.pack(fill=tk.X, pady=(10, 0))
+        # Compartment interval setting
+        interval_frame = ttk.Frame(input_frame, style='Content.TFrame')
+        interval_frame.pack(fill=tk.X, pady=5)
         
-        interval_label = ttk.Label(interval_frame, text="Compartment Interval (m):", width=20, anchor='w')
+        interval_label = ttk.Label(
+            interval_frame, 
+            text=self.t("Compartment Interval (m):"), 
+            width=25, 
+            anchor='w',
+            style='Content.TLabel'
+        )
         interval_label.pack(side=tk.LEFT)
         
-        # Create a dropdown for common interval choices
+        # Custom styled combobox frame
+        interval_combo_frame = tk.Frame(
+            interval_frame,
+            bg=self.theme_colors["field_bg"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1,
+            bd=0
+        )
+        interval_combo_frame.pack(side=tk.LEFT)
+        
+        # Interval dropdown
         self.interval_var = tk.DoubleVar(value=self.config['compartment_interval'])
         interval_choices = [1, 2]
-        interval_dropdown = ttk.Combobox(interval_frame, textvariable=self.interval_var, 
-                                    values=interval_choices, width=5, font=default_font)
-        interval_dropdown.pack(side=tk.LEFT)
-
-        # Output settings - always expanded
-        output_frame = ttk.LabelFrame(content_frame, text="Output Settings", padding=10)
+        
+        interval_dropdown = tk.OptionMenu(
+            interval_combo_frame, 
+            self.interval_var, 
+            *interval_choices
+        )
+        interval_dropdown.config(
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            activebackground=self.theme_colors["hover_highlight"],
+            activeforeground=self.theme_colors["text"],
+            font=('Arial', 10),
+            width=3,
+            highlightthickness=0,
+            bd=0
+        )
+        interval_dropdown["menu"].config(
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            activebackground=self.theme_colors["hover_highlight"],
+            activeforeground=self.theme_colors["text"],
+            font=('Arial', 10),
+            bd=0
+        )
+        interval_dropdown.pack()
+        
+        # Output settings section - Standard frame (not collapsible)
+        output_frame = ttk.Frame(content_frame, style='Section.TFrame', padding=10)
         output_frame.pack(fill=tk.X, pady=(0, 10))
-
-        # Centralized storage information
-        storage_frame = ttk.Frame(output_frame)
-        storage_frame.pack(fill=tk.X, pady=2)
-
-        storage_label = ttk.Label(storage_frame, text="Local Output:", width=15, anchor='w')
-        storage_label.pack(side=tk.LEFT)
-
-        # Display read-only output location (the centralized location)
+        
+        # Local output
+        output_folder_frame = ttk.Frame(output_frame, style='Content.TFrame')
+        output_folder_frame.pack(fill=tk.X, pady=5)
+        
+        output_label = ttk.Label(
+            output_folder_frame, 
+            text=self.t("Local Output:"), 
+            width=20, 
+            anchor='w',
+            style='Content.TLabel'
+        )
+        output_label.pack(side=tk.LEFT)
+        
         self.output_folder_var = tk.StringVar(value=self.file_manager.processed_dir)
-        storage_entry = ttk.Entry(storage_frame, textvariable=self.output_folder_var, state='readonly')
-        storage_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        # Add info button to explain file structure
+        output_entry = tk.Entry(
+            output_folder_frame,
+            textvariable=self.output_folder_var,
+            state='readonly',
+            font=('Arial', 10),
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            readonlybackground=self.theme_colors["field_bg"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
+        output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        # Info button
         info_button = ColorButton(
-            storage_frame, 
-            text="?", 
-            width=2, 
-            background=self.secondary_color,
+            output_folder_frame,
+            text="?",
+            width=2,
+            background=self.theme_colors["accent_blue"],
             foreground="white",
             command=self._show_file_structure_info
         )
-        info_button.pack(side=tk.RIGHT, padx=(5, 0))
-
-        # Output format
-        format_frame = ttk.Frame(output_frame)
-        format_frame.pack(fill=tk.X, pady=2)
+        info_button.pack(side=tk.RIGHT)
         
-        format_label = ttk.Label(format_frame, text="Output Format:", width=15, anchor='w')
+        # Output format
+        format_frame = ttk.Frame(output_frame, style='Content.TFrame')
+        format_frame.pack(fill=tk.X, pady=5)
+        
+        format_label = ttk.Label(
+            format_frame,
+            text=self.t("Output Format:"),
+            width=20,
+            anchor='w',
+            style='Content.TLabel'
+        )
         format_label.pack(side=tk.LEFT)
+        
+        format_combo_frame = tk.Frame(
+            format_frame,
+            bg=self.theme_colors["field_bg"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1,
+            bd=0
+        )
+        format_combo_frame.pack(side=tk.LEFT)
         
         self.format_var = tk.StringVar(value=self.config['output_format'])
         format_options = ['jpg', 'png', 'tiff']
-        format_dropdown = ttk.OptionMenu(format_frame, self.format_var, self.config['output_format'], *format_options)
-        format_dropdown.pack(side=tk.LEFT)
         
-        # Save debug images option (moved to output frame)
-        debug_frame = ttk.Frame(output_frame)
-        debug_frame.pack(fill=tk.X, pady=2)
+        format_dropdown = tk.OptionMenu(
+            format_combo_frame,
+            self.format_var,
+            *format_options
+        )
+        format_dropdown.config(
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            activebackground=self.theme_colors["hover_highlight"],
+            activeforeground=self.theme_colors["text"],
+            font=('Arial', 10),
+            width=6,
+            highlightthickness=0,
+            bd=0
+        )
+        format_dropdown["menu"].config(
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            activebackground=self.theme_colors["hover_highlight"],
+            activeforeground=self.theme_colors["text"],
+            font=('Arial', 10),
+            bd=0
+        )
+        format_dropdown.pack()
+        #################################################
+        # Debug images checkbox
+        debug_frame = ttk.Frame(output_frame, style='Content.TFrame')
+        debug_frame.pack(fill=tk.X, pady=5)
         
         self.debug_var = tk.BooleanVar(value=self.config['save_debug_images'])
-        debug_check = ttk.Checkbutton(debug_frame, text="Save Debug Images", variable=self.debug_var)
+        
+        # Custom styled checkbox for better visibility when checked
+        debug_check = self._create_custom_checkbox(
+            debug_frame,
+            text=self.t("Save Debug Images"),
+            variable=self.debug_var
+        )
         debug_check.pack(anchor='w')
-
+        
+        # OneDrive Path Settings - Collapsible
         # Initialize OneDrivePathManager to check for paths
         onedrive_manager = OneDrivePathManager()
         
         # Check if paths exist
         approved_path_exists = onedrive_manager.get_approved_folder_path() is not None
         processed_originals_exists = onedrive_manager.get_processed_originals_path() is not None
+        drill_traces_exists = onedrive_manager.get_drill_traces_path() is not None
         register_path_exists = onedrive_manager.get_register_path() is not None
         
-        # Add OneDrive Settings - expand based on path validity
-        should_expand = not (approved_path_exists and processed_originals_exists and register_path_exists)
-        onedrive_collapsible = CollapsibleFrame(
-            content_frame, 
-            text="OneDrive Path Settings", 
+        # Expand if any paths are missing
+        should_expand = not (approved_path_exists and processed_originals_exists and 
+                            drill_traces_exists and register_path_exists)
+        
+        onedrive_collapsible = self._create_collapsible_frame(
+            content_frame,
+            title=self.t("OneDrive Path Settings"),
             expanded=should_expand
         )
-        onedrive_collapsible.pack(fill=tk.X, pady=(0, 10))
-
+        
         # Create variables for OneDrive paths
         self.approved_path_var = tk.StringVar()
         self.processed_originals_path_var = tk.StringVar()
         self.drill_traces_path_var = tk.StringVar()
         self.register_path_var = tk.StringVar()
-
-        # Initialize variables with default values from OneDrivePathManager
-        default_project_path = "Gabon - Belinga - Exploration Drilling"
-        default_project_path_alt = os.path.join("Shared Documents", "Exploration Drilling")
-
-        # Set defaults to display in the GUI
-        self.approved_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Approved Compartment Images"))
-        self.processed_originals_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "4) Processed Originals"))
-        self.drill_traces_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "5) Drill Traces"))
-        self.register_path_var.set(os.path.join(default_project_path, "03 - Reverse Circulation", "Chip Tray Photos", "1) Chip Tray Register and Images", "Chip Tray Photo Register (Automatic).xlsx"))
-
-        # Create path input fields with improved label width
+        
+        # Set display values using OneDrivePathManager's paths or defaults if not found
+        self.approved_path_var.set(onedrive_manager.get_approved_folder_path() or 
+                                os.path.join(onedrive_manager.project_path, "03 - Reverse Circulation", 
+                                            "Chip Tray Photos", "1) Chip Tray Register and Images", 
+                                            "Approved Compartment Images"))
+        
+        self.processed_originals_path_var.set(onedrive_manager.get_processed_originals_path() or 
+                                            os.path.join(onedrive_manager.project_path, "03 - Reverse Circulation", 
+                                                        "Chip Tray Photos", "4) Processed Originals"))
+        
+        self.drill_traces_path_var.set(onedrive_manager.get_drill_traces_path() or 
+                                    os.path.join(onedrive_manager.project_path, "03 - Reverse Circulation", 
+                                                "Chip Tray Photos", "5) Drill Traces"))
+        
+        self.register_path_var.set(onedrive_manager.get_register_path() or 
+                                os.path.join(onedrive_manager.project_path, "03 - Reverse Circulation", 
+                                            "Chip Tray Photos", "1) Chip Tray Register and Images", 
+                                            "Chip Tray Photo Register (Automatic).xlsx"))
+        
+        # Create path input fields
         self._create_onedrive_path_field(
             onedrive_collapsible.content_frame, 
-            "Approved Folder:", 
+            self.t("Approved Folder:"), 
             self.approved_path_var, 
             approved_path_exists
         )
         self._create_onedrive_path_field(
             onedrive_collapsible.content_frame, 
-            "Processed Originals Folder:", 
+            self.t("Processed Originals Folder:"), 
             self.processed_originals_path_var,
             processed_originals_exists
         )
         self._create_onedrive_path_field(
             onedrive_collapsible.content_frame, 
-            "Drill Traces Folder:", 
+            self.t("Drill Traces Folder:"), 
             self.drill_traces_path_var,
-            True  # This one isn't checked by the manager
+            drill_traces_exists
         )
         self._create_onedrive_path_field(
             onedrive_collapsible.content_frame, 
-            "Excel Register:", 
+            self.t("Excel Register:"), 
             self.register_path_var,
             register_path_exists
         )
-
-        # Add a button to save settings
+        
+        # Apply button
+        button_container = ttk.Frame(onedrive_collapsible.content_frame, style='Content.TFrame')
+        button_container.pack(fill=tk.X, pady=(5, 0))
+        
         save_onedrive_button = ColorButton(
-            onedrive_collapsible.content_frame,
-            text="Apply Path Settings",
-            background=self.primary_color,
+            button_container,
+            text=self.t("Apply Path Settings"),
+            background=self.theme_colors["accent_blue"],
             foreground="white",
             command=self._update_onedrive_paths
         )
-        save_onedrive_button.pack(anchor="e", pady=(10, 5))
-
-        # Create collapsible frames for Blur Detection and OCR Settings
-        # Blur Detection - initially collapsed
-        blur_collapsible = CollapsibleFrame(content_frame, text="Blur Detection", expanded=False)
-        blur_collapsible.pack(fill=tk.X, pady=(0, 10))
+        save_onedrive_button.pack(side=tk.RIGHT)
         
-        # Move blur detection content to the collapsible frame's content_frame
-        # Enable blur detection
+        # Blur Detection - Collapsible
+        blur_collapsible = self._create_collapsible_frame(
+            content_frame,
+            title=self.t("Blur Detection"),
+            expanded=False
+        )
+        
+        # Enable blur detection checkbox
+        blur_enable_frame = ttk.Frame(blur_collapsible.content_frame, style='Content.TFrame')
+        blur_enable_frame.pack(fill=tk.X, pady=(0, 10))
+        
         self.blur_enable_var = tk.BooleanVar(value=self.config['enable_blur_detection'])
-        enable_check = ttk.Checkbutton(
-            blur_collapsible.content_frame, 
-            text="Enable Blur Detection", 
+        blur_enable_check = self._create_custom_checkbox(
+            blur_enable_frame,
+            text=self.t("Enable Blur Detection"),
             variable=self.blur_enable_var,
             command=self._toggle_blur_settings
         )
-        enable_check.pack(anchor='w', pady=(0, 5))
+        blur_enable_check.pack(anchor='w')
         
-        # Blur threshold slider
-        threshold_frame = ttk.Frame(blur_collapsible.content_frame)
-        threshold_frame.pack(fill=tk.X, pady=2)
+        # Blur settings container
+        blur_settings_frame = ttk.Frame(blur_collapsible.content_frame, style='Content.TFrame')
+        blur_settings_frame.pack(fill=tk.X, padx=20)
         
-        threshold_label = ttk.Label(threshold_frame, text="Blur Threshold:", width=15, anchor='w')
+        # Blur threshold
+        threshold_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        threshold_frame.pack(fill=tk.X, pady=5)
+        
+        threshold_label = ttk.Label(
+            threshold_frame,
+            text=self.t("Blur Threshold:"),
+            width=20,
+            anchor='w',
+            style='Content.TLabel'
+        )
         threshold_label.pack(side=tk.LEFT)
         
         self.blur_threshold_var = tk.DoubleVar(value=self.config['blur_threshold'])
-        threshold_slider = ttk.Scale(
-            threshold_frame, 
-            from_=10.0, 
-            to=500.0, 
-            orient=tk.HORIZONTAL, 
-            variable=self.blur_threshold_var
-        )
-        threshold_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        threshold_value = ttk.Label(threshold_frame, width=5)
+        threshold_slider_frame = ttk.Frame(threshold_frame, style='Content.TFrame')
+        threshold_slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        threshold_slider = ttk.Scale(
+            threshold_slider_frame,
+            from_=10.0,
+            to=500.0,
+            orient=tk.HORIZONTAL,
+            variable=self.blur_threshold_var,
+            style='Horizontal.TScale'
+        )
+        threshold_slider.pack(fill=tk.X)
+        
+        threshold_value = ttk.Label(
+            threshold_frame,
+            width=5,
+            style='Value.TLabel'
+        )
         threshold_value.pack(side=tk.RIGHT)
         
         # Update threshold value label when slider changes
@@ -6089,24 +7102,39 @@ class ChipTrayExtractor:
         self.blur_threshold_var.trace_add("write", update_threshold_label)
         update_threshold_label()  # Initial update
         
-        # ROI ratio slider
-        roi_frame = ttk.Frame(blur_collapsible.content_frame)
-        roi_frame.pack(fill=tk.X, pady=2)
+        # ROI ratio
+        roi_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        roi_frame.pack(fill=tk.X, pady=5)
         
-        roi_label = ttk.Label(roi_frame, text="ROI Ratio:", width=15, anchor='w')
+        roi_label = ttk.Label(
+            roi_frame,
+            text=self.t("ROI Ratio:"),
+            width=20,
+            anchor='w',
+            style='Content.TLabel'
+        )
         roi_label.pack(side=tk.LEFT)
         
         self.blur_roi_var = tk.DoubleVar(value=self.config['blur_roi_ratio'])
-        roi_slider = ttk.Scale(
-            roi_frame, 
-            from_=0.1, 
-            to=1.0, 
-            orient=tk.HORIZONTAL, 
-            variable=self.blur_roi_var
-        )
-        roi_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        roi_value = ttk.Label(roi_frame, width=5)
+        roi_slider_frame = ttk.Frame(roi_frame, style='Content.TFrame')
+        roi_slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        roi_slider = ttk.Scale(
+            roi_slider_frame,
+            from_=0.1,
+            to=1.0,
+            orient=tk.HORIZONTAL,
+            variable=self.blur_roi_var,
+            style='Horizontal.TScale'
+        )
+        roi_slider.pack(fill=tk.X)
+        
+        roi_value = ttk.Label(
+            roi_frame,
+            width=5,
+            style='Value.TLabel'
+        )
         roi_value.pack(side=tk.RIGHT)
         
         # Update ROI value label when slider changes
@@ -6116,48 +7144,64 @@ class ChipTrayExtractor:
         self.blur_roi_var.trace_add("write", update_roi_label)
         update_roi_label()  # Initial update
         
-        # Flag blurry images checkbox
+        # Flag blurry images
+        flag_blurry_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        flag_blurry_frame.pack(fill=tk.X, pady=5)
+        
         self.flag_blurry_var = tk.BooleanVar(value=self.config['flag_blurry_images'])
-        flag_check = ttk.Checkbutton(
-            blur_collapsible.content_frame, 
-            text="Flag Blurry Images", 
+        flag_blurry_check = self._create_custom_checkbox(
+            flag_blurry_frame,
+            text=self.t("Flag Blurry Images"),
             variable=self.flag_blurry_var
         )
-        flag_check.pack(anchor='w', pady=(5, 0))
+        flag_blurry_check.pack(anchor='w')
         
-        # Save blur visualizations checkbox
+        # Save blur visualizations
+        save_viz_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        save_viz_frame.pack(fill=tk.X, pady=5)
+        
         self.save_blur_viz_var = tk.BooleanVar(value=self.config['save_blur_visualizations'])
-        save_viz_check = ttk.Checkbutton(
-            blur_collapsible.content_frame, 
-            text="Save Blur Analysis Visualizations", 
+        save_viz_check = self._create_custom_checkbox(
+            save_viz_frame,
+            text=self.t("Save Blur Analysis Visualizations"),
             variable=self.save_blur_viz_var
         )
-        save_viz_check.pack(anchor='w', pady=(5, 0))
+        save_viz_check.pack(anchor='w')
         
         # Blurry threshold percentage
-        threshold_pct_frame = ttk.Frame(blur_collapsible.content_frame)
-        threshold_pct_frame.pack(fill=tk.X, pady=(5, 0))
+        threshold_pct_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        threshold_pct_frame.pack(fill=tk.X, pady=5)
         
         threshold_pct_label = ttk.Label(
-            threshold_pct_frame, 
-            text="Quality Alert Threshold:", 
-            width=20, 
-            anchor='w'
+            threshold_pct_frame,
+            text=self.t("Quality Alert Threshold:"),
+            width=20,
+            anchor='w',
+            style='Content.TLabel'
         )
         threshold_pct_label.pack(side=tk.LEFT)
         
         self.blur_threshold_pct_var = tk.DoubleVar(value=self.config['blurry_threshold_percentage'])
-        threshold_pct_slider = ttk.Scale(
-            threshold_pct_frame, 
-            from_=5.0, 
-            to=100.0, 
-            orient=tk.HORIZONTAL, 
-            variable=self.blur_threshold_pct_var
-        )
-        threshold_pct_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        threshold_pct_value = ttk.Label(threshold_pct_frame, width=5)
-        threshold_pct_frame.pack(side=tk.RIGHT)
+        threshold_pct_slider_frame = ttk.Frame(threshold_pct_frame, style='Content.TFrame')
+        threshold_pct_slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        threshold_pct_slider = ttk.Scale(
+            threshold_pct_slider_frame,
+            from_=5.0,
+            to=100.0,
+            orient=tk.HORIZONTAL,
+            variable=self.blur_threshold_pct_var,
+            style='Horizontal.TScale'
+        )
+        threshold_pct_slider.pack(fill=tk.X)
+        
+        threshold_pct_value = ttk.Label(
+            threshold_pct_frame,
+            width=5,
+            style='Value.TLabel'
+        )
+        threshold_pct_value.pack(side=tk.RIGHT)
         
         # Update threshold percentage value label when slider changes
         def update_threshold_pct_label(*args):
@@ -6166,181 +7210,992 @@ class ChipTrayExtractor:
         self.blur_threshold_pct_var.trace_add("write", update_threshold_pct_label)
         update_threshold_pct_label()  # Initial update
         
-        # Calibration button
-        calibration_frame = ttk.Frame(blur_collapsible.content_frame)
-        calibration_frame.pack(fill=tk.X, pady=(5, 0))
+        # Calibration and help buttons
+        button_frame = ttk.Frame(blur_settings_frame, style='Content.TFrame')
+        button_frame.pack(fill=tk.X, pady=(10, 0))
         
         calibrate_button = ColorButton(
-            calibration_frame,
-            text="Calibrate Blur Detection",
-            background=self.secondary_color,
+            button_frame,
+            text=self.t("Calibrate Blur Detection"),
+            background=self.theme_colors["accent_blue"],
             foreground="white",
             command=self._show_blur_calibration_dialog
         )
         calibrate_button.pack(side=tk.LEFT, padx=(0, 10))
         
         help_button = ColorButton(
-            calibration_frame,
+            button_frame,
             text="?",
             width=2,
-            background=self.secondary_color,
+            background=self.theme_colors["accent_blue"],
             foreground="white",
             command=self._show_blur_help
         )
         help_button.pack(side=tk.RIGHT)
         
-        # Store the blur_settings_frame for toggling
-        self.blur_settings_frame = blur_collapsible.content_frame
+        # Store blur settings widgets for toggling
+        self.blur_settings_controls = [blur_settings_frame]
         
-        # OCR Settings - initially collapsed
-        ocr_collapsible = CollapsibleFrame(content_frame, text="OCR Settings", expanded=False)
-        ocr_collapsible.pack(fill=tk.X, pady=(0, 10))
+        # OCR Settings - Collapsible
+        ocr_collapsible = self._create_collapsible_frame(
+            content_frame,
+            title=self.t("OCR Settings"),
+            expanded=False
+        )
         
         # Enable OCR checkbox
+        ocr_enable_frame = ttk.Frame(ocr_collapsible.content_frame, style='Content.TFrame')
+        ocr_enable_frame.pack(fill=tk.X, pady=(0, 10))
+        
         self.ocr_enable_var = tk.BooleanVar(value=self.config['enable_ocr'])
-        ocr_check = ttk.Checkbutton(
-            ocr_collapsible.content_frame, 
-            text="Enable OCR", 
+        ocr_enable_check = self._create_custom_checkbox(
+            ocr_enable_frame,
+            text=self.t("Enable OCR"),
             variable=self.ocr_enable_var,
             command=self._toggle_ocr_settings
         )
-        ocr_check.pack(anchor='w')
+        ocr_enable_check.pack(anchor='w')
         
-        # Prefix validation checkbox
+        # OCR settings container
+        ocr_settings_frame = ttk.Frame(ocr_collapsible.content_frame, style='Content.TFrame')
+        ocr_settings_frame.pack(fill=tk.X, padx=20)
+        
+        # Prefix validation
+        prefix_validation_frame = ttk.Frame(ocr_settings_frame, style='Content.TFrame')
+        prefix_validation_frame.pack(fill=tk.X, pady=5)
+        
         self.prefix_validation_var = tk.BooleanVar(value=self.config.get('enable_prefix_validation', True))
-        prefix_check = ttk.Checkbutton(
-            ocr_collapsible.content_frame, 
-            text="Validate Hole ID Prefixes", 
+        prefix_validation_check = self._create_custom_checkbox(
+            prefix_validation_frame,
+            text=self.t("Validate Hole ID Prefixes"),
             variable=self.prefix_validation_var,
             command=self._toggle_prefix_settings
         )
-        prefix_check.pack(anchor='w', padx=(20, 0))
+        prefix_validation_check.pack(anchor='w')
+
+
+        # Prefix list
+        prefix_frame = ttk.Frame(ocr_settings_frame, style='Content.TFrame')
+        prefix_frame.pack(fill=tk.X, pady=5, padx=(20, 0))
         
-        # Prefix list frame
-        prefix_frame = ttk.Frame(ocr_collapsible.content_frame)
-        prefix_frame.pack(fill=tk.X, pady=5)
-        
-        prefix_label = ttk.Label(prefix_frame, text="Valid Prefixes (comma separated):", width=30, anchor='w')
-        prefix_label.pack(side=tk.LEFT, padx=(40, 5))
+        prefix_label = ttk.Label(
+            prefix_frame,
+            text=self.t("Valid Prefixes (comma separated):"),
+            width=30,
+            anchor='w',
+            style='Content.TLabel'
+        )
+        prefix_label.pack(side=tk.LEFT)
         
         # Convert list to comma-separated string for display
         prefix_str = ", ".join(self.config.get('valid_hole_prefixes', ['BA', 'NB', 'SB', 'KM']))
         self.prefix_var = tk.StringVar(value=prefix_str)
-        prefix_entry = ttk.Entry(prefix_frame, textvariable=self.prefix_var)
+        
+        prefix_entry = tk.Entry(
+            prefix_frame,
+            textvariable=self.prefix_var,
+            font=('Arial', 10),
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
         prefix_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
-        # Store reference to prefix frame for toggling
-        self.prefix_frame = prefix_frame
+        # Store reference to OCR control widgets for toggling
+        self.prefix_controls = [prefix_frame]
+        self.ocr_controls = [prefix_validation_frame] + self.prefix_controls
         
-        # Initialize the UI state based on checkboxes
+        # Initialize visibility based on checkbox states
         self._toggle_blur_settings()
         self._toggle_ocr_settings()
         self._toggle_prefix_settings()
-
-        # Progress bar
-        progress_frame = ttk.LabelFrame(content_frame, text="Progress", padding=10)
-        progress_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # ----- Progress and Status -----
+        
+        # Progress section
+        progress_frame = ttk.Frame(content_frame, style='Section.TFrame', padding=10)
+        progress_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        progress_label = ttk.Label(
+            progress_frame,
+            text=self.t("Progress"),
+            style='SectionTitle.TLabel'
+        )
+        progress_label.pack(anchor='w', pady=(0, 5))
         
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
-                                        orient=tk.HORIZONTAL, length=100, mode='determinate')
-        self.progress_bar.pack(fill=tk.X)
+        self.progress_bar = ttk.Progressbar(
+            progress_frame,
+            variable=self.progress_var,
+            orient=tk.HORIZONTAL,
+            mode='determinate',
+            style='Themed.Horizontal.TProgressbar'
+        )
+        self.progress_bar.pack(fill=tk.X, pady=5)
         
-        # Status text - enlarged and improved for better visibility
-        status_frame = ttk.LabelFrame(content_frame, text="Detailed Status", padding=10)
-        status_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        # Status section
+        status_frame = ttk.Frame(content_frame, style='Section.TFrame', padding=10)
+        status_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
         
-        # Add a text widget with scrollbar
-        self.status_text = tk.Text(status_frame, height=15, wrap=tk.WORD, font=("Consolas", 11))
+        status_label = ttk.Label(
+            status_frame,
+            text=self.t("Detailed Status"),
+            style='SectionTitle.TLabel'
+        )
+        status_label.pack(anchor='w', pady=(0, 5))
+        
+        # Status text with scrollbar
+        status_container = ttk.Frame(status_frame, style='Content.TFrame')
+        status_container.pack(fill=tk.BOTH, expand=True)
+        
+        self.status_text = tk.Text(
+            status_container,
+            height=10,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            bg=self.theme_colors["field_bg"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
         self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        scrollbar = ttk.Scrollbar(status_frame, command=self.status_text.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        status_scrollbar = ttk.Scrollbar(status_container, command=self.status_text.yview)
+        status_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.status_text.config(yscrollcommand=scrollbar.set)
+        self.status_text.config(yscrollcommand=status_scrollbar.set)
         self.status_text.config(state=tk.DISABLED)
         
-        # Add text tags for different status types (error, warning, success)
-        self.status_text.tag_configure("error", foreground="red")
-        self.status_text.tag_configure("warning", foreground="orange")
-        self.status_text.tag_configure("success", foreground="green")
-        self.status_text.tag_configure("info", foreground="blue")
+        # Status text formatting tags
+        self.status_text.tag_configure("error", foreground="#ff6b6b")
+        self.status_text.tag_configure("warning", foreground="#feca57")
+        self.status_text.tag_configure("success", foreground="#1dd1a1")
+        self.status_text.tag_configure("info", foreground="#54a0ff")
         
-        # Action buttons - arranged in the specified order
-        button_frame = ttk.Frame(content_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        # Button layout - first row
-        first_row = ttk.Frame(button_frame)
-        first_row.pack(fill=tk.X, pady=(0, 5))
-        
-        self.process_button = ColorButton(
-            first_row, 
-            text="Process Photos", 
-            background=self.primary_color,
-            foreground="white",
-            command=self.start_processing
+        # ----- Footer Action Buttons -----
+        button_row = ttk.Frame(footer_frame, style='Footer.TFrame')
+        button_row.pack(side="bottom", anchor="se", padx=10, pady=10)
+
+        # Add spacing between buttons
+        button_padding = 5
+
+        # Process Photos button (accent green with hover)
+        self.process_button = ModernButton(
+            button_row,
+            "Process Photos",
+            self.theme_colors["accent_green"],
+            self.start_processing,
+            icon="▶",
+            theme_colors=self.theme_colors
         )
-        self.process_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        
-        self.review_button = ColorButton(
-            first_row,
-            text="Review Extracted Images",
-            background=self.secondary_color,
-            foreground="white",
-            command=self._start_image_review
+        self.process_button.pack(side="left", padx=button_padding)
+
+        # Review Extracted Images button
+        self.review_button = ModernButton(
+            button_row,
+            "Review Extracted Images",
+            self.theme_colors["accent_blue"],
+            self._start_image_review,
+            icon="🔍",
+            theme_colors=self.theme_colors
         )
-        self.review_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
-        
-        # Second row
-        second_row = ttk.Frame(button_frame)
-        second_row.pack(fill=tk.X, pady=(0, 5))
-        
-        self.trace_button = ColorButton(
-            second_row,
-            text="Generate Drillhole Trace",
-            background=self.primary_color,
-            foreground="white",
-            command=self.on_generate_trace
+        self.review_button.pack(side="left", padx=button_padding)
+
+        # Generate Drillhole Trace button
+        self.trace_button = ModernButton(
+            button_row,
+            "Generate Drillhole Trace",
+            self.theme_colors["accent_blue"],
+            self.on_generate_trace,
+            icon="📊",
+            theme_colors=self.theme_colors
         )
-        self.trace_button.pack(fill=tk.X)
-        
-        # Quit button row
-        third_row = ttk.Frame(button_frame)
-        third_row.pack(fill=tk.X)
-        
-        quit_button = ColorButton(
-            third_row, 
-            text="Quit", 
-            background="#D32F2F",  # Red for quit button
-            foreground="white",
-            command=self.quit_app
+        self.trace_button.pack(side="left", padx=button_padding)
+
+
+        # Quit button (last button)
+        quit_button = ModernButton(
+            button_row,
+            "Quit",
+            self.theme_colors["accent_red"],
+            self.quit_app,
+            icon="✖",
+            theme_colors=self.theme_colors
         )
-        quit_button.pack(side=tk.RIGHT, fill=tk.X, padx=(5, 0), pady=(5, 0))
+        quit_button.pack(side="left", padx=5)
+
+        # ----- Menu Bar -----
         
-        # Set up a timer to check for progress updates
+        # Create and configure themed menu bar
+        menubar = tk.Menu(self.root, bg=self.theme_colors["menu_bg"], fg=self.theme_colors["menu_fg"])
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = tk.Menu(
+            menubar, 
+            tearoff=0, 
+            bg=self.theme_colors["menu_bg"], 
+            fg=self.theme_colors["menu_fg"],
+            activebackground=self.theme_colors["menu_active_bg"],
+            activeforeground=self.theme_colors["menu_active_fg"]
+        )
+        menubar.add_cascade(label=self.t("File"), menu=file_menu)
+        
+        # Add theme toggle to File menu
+        file_menu.add_command(
+            label=self.t("Switch to Light Theme") if self.current_theme == "dark" else self.t("Switch to Dark Theme"),
+            command=self._toggle_theme
+        )
+        file_menu.add_separator()
+        file_menu.add_command(label=self.t("Exit"), command=self.quit_app)
+        
+        # Language menu
+        self.language_menu = tk.Menu(
+            menubar, 
+            tearoff=0, 
+            bg=self.theme_colors["menu_bg"], 
+            fg=self.theme_colors["menu_fg"],
+            activebackground=self.theme_colors["menu_active_bg"],
+            activeforeground=self.theme_colors["menu_active_fg"]
+        )
+        menubar.add_cascade(label=self.t("Language"), menu=self.language_menu)
+        
+        # Add language options
+        self.language_var = tk.StringVar(value=self.translator.current_language)
+        languages = self.translator.get_available_languages()
+        
+        for lang_code in languages:
+            lang_name = self.translator.get_language_name(lang_code)
+            self.language_menu.add_radiobutton(
+                label=lang_name,
+                value=lang_code,
+                variable=self.language_var,
+                command=lambda: self.change_language(self.language_var.get())
+            )
+        
+        # Help menu
+        help_menu = tk.Menu(
+            menubar, 
+            tearoff=0, 
+            bg=self.theme_colors["menu_bg"], 
+            fg=self.theme_colors["menu_fg"],
+            activebackground=self.theme_colors["menu_active_bg"],
+            activeforeground=self.theme_colors["menu_active_fg"]
+        )
+        menubar.add_cascade(label=self.t("Help"), menu=help_menu)
+        help_menu.add_command(label=self.t("Check for Updates"), command=self.on_check_for_updates)
+        help_menu.add_command(label=self.t("About"), command=self._show_about_dialog)
+        
+        # Set up timer to check for progress updates
         self.root.after(100, self.check_progress)
         
         # Add initial status message
-        self.update_status("Ready. Select a folder and click 'Process Photos'.", "info")
-
-        # After setting up all your existing UI components, add a menu bar
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-        
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="Check for Updates", command=self.on_check_for_updates)
-        help_menu.add_command(label="About", command=self._show_about_dialog)
+        self.update_status(self.t("Ready. Select a folder and click 'Process Photos'."), "info")
         
         # Check for updates at startup if enabled
         if self.config.get('check_for_updates', True):
-            # Schedule update check after GUI is fully loaded
             self.root.after(2000, self._check_updates_at_startup)
 
+    def _create_modern_button(self, parent, text, color, command, icon=None, grid_pos=None):
+        """
+        Create a modern styled button with hover effects.
+        
+        Args:
+            parent: Parent widget
+            text: Button text
+            color: Base button color
+            command: Button command
+            icon: Optional text icon
+            grid_pos: Optional grid position tuple (row, col)
+        
+        Returns:
+            The created button frame
+        """
+        # Create a frame with the button's background color
+        button_frame = tk.Frame(
+            parent,
+            background=color,
+            highlightbackground=color,
+            highlightthickness=1,
+            bd=0,
+            cursor="hand2"
+        )
+        
+        # Minimum width based on text length
+        min_width = max(120, len(text) * 10)
+        
+        # Button content with icon and text
+        prefix = f"{icon} " if icon else ""
+        button_text = tk.Label(
+            button_frame,
+            text=prefix + self.t(text),
+            background=color,
+            foreground="white",
+            font=("Arial", 11),
+            padx=15,
+            pady=8,
+            cursor="hand2",
+            width=min_width // 10  # Approximate character width
+        )
+        button_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Hover effects
+        def on_enter(e):
+            # Safety check - make sure the widget still exists
+            if button_frame.winfo_exists() and button_text.winfo_exists():
+                # Lighten the color slightly on hover
+                button_frame.config(background=self._lighten_color(color, 0.15))
+                button_text.config(background=self._lighten_color(color, 0.15))
+                
+        def on_leave(e):
+            # Safety check - make sure the widget still exists
+            if button_frame.winfo_exists() and button_text.winfo_exists():
+                button_frame.config(background=color)
+                button_text.config(background=color)
+                
+        def on_click(e):
+            # Safety check - make sure the widget still exists
+            if button_frame.winfo_exists() and button_text.winfo_exists():
+                # Darken the color slightly on click
+                button_frame.config(background=self._darken_color(color, 0.15))
+                button_text.config(background=self._darken_color(color, 0.15))
+                
+                # Execute the command safely
+                try:
+                    command()
+                except Exception as err:
+                    self.logger.error(f"Error executing button command: {str(err)}")
+                
+                # Try to restore hover appearance if the widget still exists
+                try:
+                    if button_frame.winfo_exists() and button_text.winfo_exists():
+                        on_enter(None)
+                except Exception:
+                    pass
+        
+        # Bind events
+        button_frame.bind("<Enter>", on_enter)
+        button_text.bind("<Enter>", on_enter)
+        button_frame.bind("<Leave>", on_leave)
+        button_text.bind("<Leave>", on_leave)
+        button_frame.bind("<Button-1>", on_click)
+        button_text.bind("<Button-1>", on_click)
+        
+        return button_frame
+
+    def _create_custom_checkbox(self, parent, text, variable, command=None):
+        """
+        Create a custom checkbox with better visibility when checked/unchecked.
+        
+        Args:
+            parent: Parent widget
+            text: Checkbox text
+            variable: BooleanVar to track state
+            command: Optional command to execute on toggle
+        
+        Returns:
+            Frame containing the custom checkbox
+        """
+        # Create frame for checkbox
+        frame = ttk.Frame(parent, style='Content.TFrame')
+        
+        # Custom checkbox appearance
+        checkbox_size = 18
+        checkbox_frame = tk.Frame(
+            frame,
+            width=checkbox_size,
+            height=checkbox_size,
+            bg=self.theme_colors["checkbox_bg"],
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
+        checkbox_frame.pack(side=tk.LEFT, padx=(0, 5))
+        checkbox_frame.pack_propagate(False)  # Maintain size
+        
+        # Checkmark that appears when checked
+        checkmark = tk.Label(
+            checkbox_frame,
+            text="✓",
+            bg=self.theme_colors["checkbox_bg"],
+            fg=self.theme_colors["checkbox_fg"],
+            font=("Arial", 12, "bold")
+        )
+        
+        # Show/hide checkmark based on variable state
+        def update_state(*args):
+            if variable.get():
+                checkmark.pack(fill=tk.BOTH, expand=True)
+            else:
+                checkmark.pack_forget()
+        
+        # Initial state
+        update_state()
+        
+        # Bind variable changes
+        variable.trace_add("write", update_state)
+        
+        # Toggle function
+        def toggle(event=None):
+            variable.set(not variable.get())
+            if command:
+                command()
+        
+        # Bind click events
+        checkbox_frame.bind("<Button-1>", toggle)
+        checkmark.bind("<Button-1>", toggle)
+        
+        # Add text label
+        label = ttk.Label(
+            frame,
+            text=self.t(text),
+            style='Content.TLabel'
+        )
+        label.pack(side=tk.LEFT)
+        label.bind("<Button-1>", toggle)
+        
+        return frame
+
+    def _create_collapsible_frame(self, parent, title, expanded=False):
+        """
+        Create a themed collapsible frame.
+        
+        Args:
+            parent: Parent widget
+            title: Frame title
+            expanded: Whether frame is initially expanded
+        
+        Returns:
+            CollapsibleFrame instance
+        """
+        frame = CollapsibleFrame(
+            parent,
+            text=title,
+            expanded=expanded,
+            bg=self.theme_colors["secondary_bg"],
+            fg=self.theme_colors["text"],
+            title_bg=self.theme_colors["secondary_bg"],
+            title_fg=self.theme_colors["text"],
+            content_bg=self.theme_colors["background"],
+            border_color=self.theme_colors["border"],
+            arrow_color=self.theme_colors["accent_blue"]
+        )
+        frame.pack(fill=tk.X, pady=(0, 10))
+        return frame
+
+    def _create_onedrive_path_field(self, parent, label_text, string_var, valid=False):
+        """Create a field for OneDrive path input with browse button."""
+        frame = ttk.Frame(parent, style='Content.TFrame')
+        frame.pack(fill=tk.X, pady=5)
+        
+        # Label with wider fixed width
+        label = ttk.Label(
+            frame, 
+            text=self.t(label_text), 
+            width=25, 
+            anchor='w',
+            style='Content.TLabel'
+        )
+        label.pack(side=tk.LEFT)
+        
+        # Themed entry field with validation coloring
+        entry = tk.Entry(
+            frame, 
+            textvariable=string_var,
+            font=('Arial', 10),
+            bg=self.theme_colors["accent_valid"] if valid else self.theme_colors["accent_error"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            relief=tk.FLAT,
+            bd=1,
+            highlightbackground=self.theme_colors["field_border"],
+            highlightthickness=1
+        )
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        # Browse button
+        browse_button = ColorButton(
+            frame, 
+            text=self.t("Browse"), 
+            background=self.theme_colors["accent_blue"],
+            foreground="white",
+            command=lambda: self._browse_onedrive_path(string_var, entry)
+        )
+        browse_button.pack(side=tk.RIGHT)
+        
+        return frame
+
+    def _lighten_color(self, color, amount=0.2):
+        """Lighten a hex color by the specified amount."""
+        # Convert hex to RGB
+        r = int(color[1:3], 16)
+        g = int(color[3:5], 16)
+        b = int(color[5:7], 16)
+        
+        # Lighten
+        r = min(255, int(r + (255 - r) * amount))
+        g = min(255, int(g + (255 - g) * amount))
+        b = min(255, int(b + (255 - b) * amount))
+        
+        # Convert back to hex
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _darken_color(self, color, amount=0.2):
+        """Darken a hex color by the specified amount."""
+        # Convert hex to RGB
+        r = int(color[1:3], 16)
+        g = int(color[3:5], 16)
+        b = int(color[5:7], 16)
+        
+        # Darken
+        r = max(0, int(r * (1 - amount)))
+        g = max(0, int(g * (1 - amount)))
+        b = max(0, int(b * (1 - amount)))
+        
+        # Convert back to hex
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _toggle_theme(self):
+        """Toggle between light and dark themes with comprehensive widget updates."""
+        # Switch theme
+        self.current_theme = "light" if self.current_theme == "dark" else "dark"
+        self.theme_colors = self.theme_modes[self.current_theme]
+        
+        # Update all ttk styles first
+        self.configure_styles()
+        
+        # Update menu item text for theme toggle
+        menu_label = self.t("Switch to Light Theme") if self.current_theme == "dark" else self.t("Switch to Dark Theme")
+        self.root.nametowidget(self.root["menu"]).entryconfig(1, label=menu_label)
+        
+        # Apply theme to window title bar
+        if platform.system() == 'Windows':
+            try:
+                from ctypes import windll, byref, sizeof, c_int
+                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                # Use 1 for dark mode, 0 for light mode
+                dark_value = 1 if self.current_theme == "dark" else 0
+                windll.dwmapi.DwmSetWindowAttribute(
+                    windll.user32.GetParent(self.root.winfo_id()), 
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    byref(c_int(dark_value)), 
+                    sizeof(c_int)
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to set title bar theme: {e}")
+        
+        # Update root window background
+        self.root.configure(bg=self.theme_colors["background"])
+        
+        # Update all custom widgets
+        self._update_widgets_after_theme_change()
+        
+        # Save theme preference
+        self._save_theme_preference()
+        
+        # Notify user
+        self.update_status(self.t(f"Switched to {self.current_theme} theme"), "info")
+    
+    def _save_theme_preference(self):
+        """Save theme preference to config."""
+        try:
+            config_dir = os.path.join(self.file_manager.base_dir, "Program Resources")
+            os.makedirs(config_dir, exist_ok=True)
+            config_path = os.path.join(config_dir, "config.json")
+            
+            # Load existing config if it exists
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+            
+            # Update theme setting
+            config['theme'] = self.current_theme
+            
+            # Save updated config
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
+            
+            self.logger.info(f"Saved theme preference: {self.current_theme}")
+        except Exception as e:
+            self.logger.error(f"Error saving theme preference: {str(e)}")
+
+    def _load_theme_preference(self):
+        """Load theme preference from config."""
+        try:
+            config_path = os.path.join(self.file_manager.base_dir, "Program Resources", "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    if 'theme' in config:
+                        self.current_theme = config['theme']
+                        self.theme_colors = self.theme_modes[self.current_theme]
+                        self.logger.info(f"Loaded theme preference: {self.current_theme}")
+        except Exception as e:
+            self.logger.error(f"Error loading theme preference: {str(e)}")
+
+    def configure_styles(self):
+        """Configure ttk styles based on current theme with improved consistency."""
+        style = ttk.Style()
+        
+        # Set theme colors
+        colors = self.theme_colors
+        
+        # Configure frame styles with complete styling
+        style.configure('TFrame', background=colors["background"])
+        style.configure('Main.TFrame', background=colors["background"])
+        style.configure('Header.TFrame', background=colors["secondary_bg"])
+        style.configure('Content.TFrame', background=colors["background"])
+        style.configure('Footer.TFrame', background=colors["background"])
+        style.configure('Section.TFrame', background=colors["secondary_bg"], 
+                    borderwidth=1, relief="raised", bordercolor=colors["border"])
+        
+        # Configure label styles with complete styling
+        style.configure('TLabel', 
+                    background=colors["background"], 
+                    foreground=colors["text"], 
+                    font=('Arial', 10))
+        style.configure('Title.TLabel', 
+                    background=colors["secondary_bg"], 
+                    foreground=colors["text"], 
+                    font=('Arial', 14, 'bold'))
+        style.configure('SectionTitle.TLabel', 
+                    background=colors["secondary_bg"], 
+                    foreground=colors["text"], 
+                    font=('Arial', 11, 'bold'))
+        style.configure('Content.TLabel', 
+                    background=colors["background"], 
+                    foreground=colors["text"])
+        style.configure('Value.TLabel', 
+                    background=colors["background"], 
+                    foreground=colors["accent_blue"], 
+                    font=('Arial', 10, 'bold'))
+        
+        # Configure button styles with complete styling
+        style.configure('TButton', 
+                    background=colors["secondary_bg"], 
+                    foreground=colors["text"])
+        style.map('TButton',
+                background=[('active', colors["hover_highlight"])],
+                foreground=[('active', colors["text"])])
+        
+        # Configure checkbox styles with complete styling
+        style.configure('TCheckbutton', 
+                    background=colors["background"], 
+                    foreground=colors["text"])
+        style.map('TCheckbutton', 
+                background=[('active', colors["background"])],
+                foreground=[('active', colors["text"])])
+        
+        # Configure entry styles with complete styling
+        style.configure('TEntry', 
+                    fieldbackground=colors["field_bg"],
+                    foreground=colors["text"],
+                    insertcolor=colors["text"],
+                    bordercolor=colors["field_border"])
+        
+        # Configure progress bar with complete styling
+        style.configure('Horizontal.TProgressbar', 
+                    background=colors["accent_green"],
+                    troughcolor=colors["secondary_bg"],
+                    bordercolor=colors["border"],
+                    lightcolor=colors["accent_green"],
+                    darkcolor=colors["accent_green"])
+        style.configure('Themed.Horizontal.TProgressbar', 
+                    background=colors["accent_green"],
+                    troughcolor=colors["secondary_bg"],
+                    bordercolor=colors["border"],
+                    lightcolor=colors["accent_green"],
+                    darkcolor=colors["accent_green"])
+        
+        # Configure scrollbar with complete styling
+        style.configure('TScrollbar', 
+                    background=colors["secondary_bg"],
+                    troughcolor=colors["background"],
+                    bordercolor=colors["border"],
+                    arrowcolor=colors["text"])
+        style.map('TScrollbar',
+                background=[('active', colors["hover_highlight"])],
+                arrowcolor=[('active', colors["accent_blue"])])
+        
+        # Configure scale/slider with complete styling
+        style.configure('Horizontal.TScale',
+                    background=colors["background"],
+                    troughcolor=colors["secondary_bg"],
+                    slidercolor=colors["accent_blue"])
+        
+        # Configure separator with theme colors
+        style.configure('TSeparator', 
+                    background=colors["separator"])
+        
+        # Force theme reloading - important for complete theme switching
+        style.theme_use(style.theme_use())
 
 
+    def _apply_theme_to_widget(self, widget):
+        """
+        Recursively apply background/foreground styling to non-ttk widgets
+        based on the current theme.
+        """
+        colors = self.theme_colors  # Automatically matches current theme
+
+        try:
+            # Input fields (tk.Entry, tk.Text)
+            if isinstance(widget, (tk.Entry, tk.Text)):
+                widget.configure(
+                    background=colors["field_bg"],
+                    foreground=colors["text"],
+                    insertbackground=colors["text"],
+                    disabledbackground=colors["field_bg"],
+                    disabledforeground=colors["field_border"]
+                )
+
+            # Standard buttons
+            elif isinstance(widget, tk.Button):
+                widget.configure(
+                    background=colors["secondary_bg"],
+                    foreground=colors["text"],
+                    activebackground=colors["hover_highlight"],
+                    activeforeground=colors["text"]
+                )
+
+            # Labels
+            elif isinstance(widget, tk.Label):
+                widget.configure(
+                    background=colors["background"],
+                    foreground=colors["text"]
+                )
+
+            # Frames
+            elif isinstance(widget, tk.Frame):
+                widget.configure(background=colors["background"])
+
+            # Custom buttons like ColorButton (if they expose a configure method)
+            elif isinstance(widget, ColorButton):
+                widget.set_theme(colors)
+
+            # Recurse into child widgets if it's a container
+            if isinstance(widget, (tk.Frame, ttk.Frame)):
+                for child in widget.winfo_children():
+                    self._apply_theme_to_widget(child)
+
+        except Exception as e:
+            self.logger.debug(f"Could not apply theme to widget {widget}: {e}")
+
+
+    def _update_widgets_after_theme_change(self):
+        """Update all widgets when theme changes to ensure complete theme switching."""
+        try:
+            # Update colors for theme
+            colors = self.theme_colors
+            
+            # Update entry fields
+            for entry_var, entry_widget in [
+                (self.folder_var, self.folder_entry),
+                (self.prefix_var, getattr(self, 'prefix_entry', None)),
+                (self.output_folder_var, getattr(self, 'output_entry', None))
+            ]:
+                if entry_widget:
+                    # Determine background color based on content validation
+                    if entry_var == self.folder_var:
+                        # Special handling for folder path
+                        path = entry_var.get()
+                        if path and os.path.isdir(path) and any(f.lower().endswith(('.jpg', '.jpeg', '.png')) 
+                                                            for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))):
+                            bg_color = colors["accent_valid"]
+                        else:
+                            bg_color = colors["accent_error"]
+                    else:
+                        # Default handling
+                        bg_color = colors["field_bg"]
+                        
+                    entry_widget.config(
+                        bg=bg_color,
+                        fg=colors["text"],
+                        insertbackground=colors["text"],
+                        highlightbackground=colors["field_border"],
+                        highlightcolor=colors["field_border"]
+                    )
+            
+            # Update status text widget
+            if hasattr(self, 'status_text'):
+                self.status_text.config(
+                    bg=colors["field_bg"],
+                    fg=colors["text"],
+                    insertbackground=colors["text"],
+                    highlightbackground=colors["field_border"],
+                    highlightcolor=colors["field_border"]
+                )
+            
+            # Update dropdown/combobox widgets
+            for dropdown in [
+                getattr(self, 'interval_dropdown', None),
+                getattr(self, 'format_dropdown', None)
+            ]:
+                if dropdown:
+                    dropdown.config(
+                        bg=colors["field_bg"],
+                        fg=colors["text"],
+                        activebackground=colors["hover_highlight"],
+                        activeforeground=colors["text"]
+                    )
+                    
+                    # Update the dropdown menu
+                    if dropdown.children:
+                        menu = dropdown["menu"]
+                        menu.config(
+                            bg=colors["field_bg"],
+                            fg=colors["text"],
+                            activebackground=colors["hover_highlight"],
+                            activeforeground=colors["text"]
+                        )
+            
+            # Update checkboxes
+            for checkbox_var, checkbox_widget in [
+                (self.debug_var, getattr(self, 'debug_check', None)),
+                (self.blur_enable_var, getattr(self, 'blur_enable_check', None)),
+                (self.flag_blurry_var, getattr(self, 'flag_blurry_check', None)),
+                (self.save_blur_viz_var, getattr(self, 'save_viz_check', None)),
+                (self.ocr_enable_var, getattr(self, 'ocr_enable_check', None)),
+                (self.prefix_validation_var, getattr(self, 'prefix_validation_check', None))
+            ]:
+                if checkbox_widget:
+                    # For custom checkboxes, update both the container and checkmark
+                    if hasattr(checkbox_widget, 'winfo_children'):
+                        for child in checkbox_widget.winfo_children():
+                            if isinstance(child, tk.Frame):  # This is the checkbox box
+                                child.config(
+                                    bg=colors["checkbox_bg"],
+                                    highlightbackground=colors["field_border"]
+                                )
+                                # Find the checkmark label inside
+                                for grandchild in child.winfo_children():
+                                    if isinstance(grandchild, tk.Label):
+                                        grandchild.config(
+                                            bg=colors["checkbox_bg"],
+                                            fg=colors["checkbox_fg"]
+                                        )
+                            elif isinstance(child, ttk.Label):  # This is the text label
+                                child.config(style='Content.TLabel')
+            
+            # Update all collapsible frames
+            for collapsible_attr in ['onedrive_collapsible', 'blur_collapsible', 'ocr_collapsible']:
+                collapsible = getattr(self, collapsible_attr, None)
+                if collapsible and hasattr(collapsible, 'update_theme'):
+                    collapsible.update_theme(
+                        colors["secondary_bg"],  # bg
+                        colors["text"],  # fg
+                        colors["secondary_bg"],  # title_bg
+                        colors["text"],  # title_fg
+                        colors["background"],  # content_bg
+                        colors["border"],  # border_color
+                        colors["accent_blue"]  # arrow_color
+                    )
+            
+            # Update canvas elements
+            for widget in self.root.winfo_descendants():
+                if isinstance(widget, tk.Canvas):
+                    widget.config(bg=colors["background"])
+                elif isinstance(widget, (tk.Frame, ttk.Frame)) and not isinstance(widget, CollapsibleFrame):
+                    try:
+                        widget.config(bg=colors["background"])
+                    except:
+                        pass  # Some ttk frames don't support bg
+            
+            # Update menus
+            menubar = self.root.nametowidget(self.root["menu"])
+            for i in range(menubar.index("end") + 1):
+                menu = menubar.nametowidget(menubar.entrycget(i, "menu"))
+                menu.config(
+                    bg=colors["menu_bg"],
+                    fg=colors["menu_fg"],
+                    activebackground=colors["menu_active_bg"],
+                    activeforeground=colors["menu_active_fg"]
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Error updating widgets after theme change: {e}")
+            self.logger.error(traceback.format_exc())
+    
+
+    def _update_collapsible_theme(self, collapsible_frame):
+        """Update theme for a collapsible frame"""
+        if not isinstance(collapsible_frame, CollapsibleFrame):
+            return
+            
+        collapsible_frame.bg = self.theme_colors["secondary_bg"]
+        collapsible_frame.fg = self.theme_colors["text"]
+        collapsible_frame.title_bg = self.theme_colors["secondary_bg"]
+        collapsible_frame.title_fg = self.theme_colors["text"]
+        collapsible_frame.content_bg = self.theme_colors["background"]
+        collapsible_frame.border_color = self.theme_colors["border"]
+        collapsible_frame.arrow_color = self.theme_colors["accent_blue"]
+        
+        # Update header
+        collapsible_frame.header_frame.config(bg=self.theme_colors["secondary_bg"],
+                                            highlightbackground=self.theme_colors["border"])
+        # Update toggle button
+        collapsible_frame.toggle_button.config(bg=self.theme_colors["secondary_bg"],
+                                            fg=self.theme_colors["accent_blue"])
+        # Update header label
+        collapsible_frame.header_label.config(bg=self.theme_colors["secondary_bg"],
+                                            fg=self.theme_colors["text"])
+        # Update content frame
+        collapsible_frame.content_frame.config(bg=self.theme_colors["background"])
+
+    def _update_gui_translations(self):
+        """Update all GUI text elements with current language."""
+        if not hasattr(self, 'root') or not self.root:
+            return
+            
+        # Update window title
+        self.root.title(self.t("Chip Tray Extractor"))
+        
+        # This would be a comprehensive list of GUI element updates
+        # You'll need to maintain references to all labels, buttons, etc. that need translation
+        
+        # For example:
+        if hasattr(self, 'title_label'):
+            self.title_label.config(text=self.t("Chip Tray Extractor"))
+            
+        # More GUI element updates would go here
+        
+        # Update menu items
+        if hasattr(self, 'file_menu'):
+            self.file_menu.entryconfigure(0, label=self.t("Exit"))
+        
+        if hasattr(self, 'help_menu'):
+            self.help_menu.entryconfigure(0, label=self.t("Check for Updates"))
+            self.help_menu.entryconfigure(1, label=self.t("About"))
+
+    def change_language(self, language_code):
+        """Change the application language and update all GUI text."""
+        if self.translator.set_language(language_code):
+            # Save preference
+            self._save_language_preference(language_code)
+            
+            # Update all GUI text elements
+            self._update_gui_translations()
+            
+            self.logger.info(f"Language changed to {self.translator.get_language_name(language_code)}")
+            
+            # Show confirmation to the user
+            if hasattr(self, 'root') and self.root:
+                messagebox.showinfo(
+                    self.t("Language Changed"),
+                    self.t("Application language has been changed to {language}.").format(
+                        language=self.translator.get_language_name(language_code)
+                    )
+                )
+            
+            return True
+        return False
 
     def on_check_for_updates(self):
         self.update_checker.check_for_updates(parent=self.root)
@@ -6379,30 +8234,110 @@ class ChipTrayExtractor:
 
     def _create_onedrive_path_field(self, parent, label_text, string_var, valid=False):
         """Create a field for OneDrive path input with browse button."""
-        frame = ttk.Frame(parent)
+        frame = ttk.Frame(parent, style='Content.TFrame')
         frame.pack(fill=tk.X, pady=5)
         
-        label = ttk.Label(frame, text=label_text, width=25, anchor='w')
+        # Label with wider fixed width
+        label = ttk.Label(
+            frame, 
+            text=self.t(label_text), 
+            width=25, 
+            anchor='w',
+            style='Content.TLabel'
+        )
         label.pack(side=tk.LEFT)
         
-        # Use custom Entry with background color
+        # Themed entry field with validation coloring
         entry = tk.Entry(
             frame, 
             textvariable=string_var,
-            font=('Arial', 11),
-            bg=self.light_green if valid else self.light_red
+            font=('Arial', 10),
+            bg=self.theme_colors["accent_valid"] if valid else self.theme_colors["accent_error"],
+            fg=self.theme_colors["text"],
+            insertbackground=self.theme_colors["text"],
+            relief=tk.FLAT,  # Use flat relief to avoid default borders
+            bd=1,  # Minimal border width
+            highlightbackground=self.theme_colors["field_border"],
+            highlightcolor=self.theme_colors["field_border"],
+            highlightthickness=1  # Use highlight for border to match theme
         )
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
+        # Browse button
         browse_button = ColorButton(
             frame, 
-            text="Browse", 
-            background=self.secondary_color,
+            text=self.t("Browse"), 
+            background=self.theme_colors["accent_blue"],
             foreground="white",
             command=lambda: self._browse_onedrive_path(string_var, entry)
         )
         browse_button.pack(side=tk.RIGHT)
+        
+        return frame
+     
+    def _toggle_blur_settings(self):
+        """Enable or disable blur detection settings based on checkbox state."""
+        if not hasattr(self, 'blur_settings_controls'):
+            return
+            
+        state = 'normal' if self.blur_enable_var.get() else 'disabled'
+        
+        for widget in self.blur_settings_controls:
+            self._set_widget_state(widget, state)
 
+    def _toggle_ocr_settings(self):
+        """Enable/disable OCR settings based on checkbox state."""
+        if not hasattr(self, 'ocr_controls'):
+            return
+            
+        state = 'normal' if self.ocr_enable_var.get() else 'disabled'
+        
+        for widget in self.ocr_controls:
+            self._set_widget_state(widget, state)
+
+    def _toggle_prefix_settings(self):
+        """Enable/disable prefix settings based on checkbox state."""
+        if not hasattr(self, 'prefix_controls'):
+            return
+            
+        # Only enable if both OCR is enabled and prefix validation is enabled
+        state = 'normal' if (hasattr(self, 'ocr_enable_var') and 
+                        self.ocr_enable_var.get() and 
+                        self.prefix_validation_var.get()) else 'disabled'
+        
+        for widget in self.prefix_controls:
+            self._set_widget_state(widget, state)
+
+    def _set_widget_state(self, widget, state):
+        """
+        Set the state of a widget and its children, handling different widget types.
+        
+        Args:
+            widget: The widget to set state for
+            state: 'normal' or 'disabled'
+        """
+        try:
+            # Some widgets have direct state configuration
+            if isinstance(widget, (ttk.Entry, ttk.Button, ttk.Scale, ttk.Combobox, ttk.Checkbutton)):
+                widget.configure(state=state)
+            elif isinstance(widget, tk.Entry):
+                if state == 'disabled':
+                    widget.configure(state='readonly')
+                else:
+                    widget.configure(state='normal')
+            elif isinstance(widget, (tk.Button, tk.OptionMenu, ColorButton)):
+                widget.configure(state=state)
+            elif isinstance(widget, (tk.Text, tk.Canvas)):
+                widget.configure(state=state)
+            
+            # Handle containers - for frames, apply to all children
+            if isinstance(widget, (ttk.Frame, tk.Frame)):
+                for child in widget.winfo_children():
+                    self._set_widget_state(child, state)
+        except Exception as e:
+            # If widget doesn't support state config, log but don't crash
+            self.logger.debug(f"Could not set state to {state} for {widget}: {str(e)}")
+    
     def _browse_onedrive_path(self, string_var, entry_widget=None):
         """Open folder browser and update path variable."""
         folder_path = filedialog.askdirectory(title="Select OneDrive folder")
@@ -6429,36 +8364,6 @@ class ChipTrayExtractor:
             "OneDrive path settings have been updated."
         )
 
-
-    def _toggle_ocr_settings(self):
-        """Enable/disable OCR settings based on checkbox state."""
-        if hasattr(self, 'prefix_check') and hasattr(self, 'prefix_validation_var'):
-            if self.ocr_enable_var.get():
-                # Enable all OCR settings
-                self.prefix_check.configure(state='normal')
-                self._toggle_prefix_settings()  # Update prefix entry state
-            else:
-                # Disable all OCR settings
-                self.prefix_check.configure(state='disabled')
-                for child in self.prefix_frame.winfo_children():
-                    if isinstance(child, (ttk.Entry, ttk.Checkbutton)):
-                        child.configure(state='disabled')
-
-    def _toggle_prefix_settings(self):
-        """Enable/disable prefix settings based on checkbox state."""
-        if hasattr(self, 'prefix_frame') and hasattr(self, 'prefix_validation_var'):
-            if self.ocr_enable_var.get() and self.prefix_validation_var.get():
-                # Enable the prefix entry
-                for child in self.prefix_frame.winfo_children():
-                    if isinstance(child, ttk.Entry):
-                        child.configure(state='normal')
-            else:
-                # Disable the prefix entry
-                for child in self.prefix_frame.winfo_children():
-                    if isinstance(child, ttk.Entry):
-                        child.configure(state='disabled')
-
-
     def _start_image_review(self):
         """Start the image review process for pending trays."""
         try:
@@ -6473,7 +8378,7 @@ class ChipTrayExtractor:
             
         except Exception as e:
             self.logger.error(f"Error starting image review: {str(e)}")
-            messagebox.showerror("Error", f"An error occurred starting the review: {str(e)}")
+            DialogHelper.show_message(self.dialog, "Error", f"An error occurred starting the review: {str(e)}", message_type="error")
     
     def _show_file_structure_info(self):
         """Show information about the new file structure."""
@@ -6494,21 +8399,6 @@ class ChipTrayExtractor:
             "- Originals: HoleID_From-To_Original.ext"
         )
         messagebox.showinfo("File Structure Information", info_message)
-    
-    def _toggle_blur_settings(self):
-        """Enable or disable blur detection settings based on checkbox state."""
-        if self.blur_enable_var.get():
-            # Enable all blur settings
-            for child in self.blur_settings_frame.winfo_children():
-                for widget in child.winfo_children():
-                    if isinstance(widget, (ttk.Scale, ttk.Checkbutton, ttk.Button, ttk.Entry)):
-                        widget.configure(state='normal')
-        else:
-            # Disable all blur settings
-            for child in self.blur_settings_frame.winfo_children():
-                for widget in child.winfo_children():
-                    if isinstance(widget, (ttk.Scale, ttk.Checkbutton, ttk.Button, ttk.Entry)):
-                        widget.configure(state='disabled')
 
     def _show_blur_help(self):
         """Show help information about blur detection."""
@@ -6534,7 +8424,7 @@ class ChipTrayExtractor:
         """Show a dialog for calibrating blur detection."""
         # Create a dialog
         dialog = tk.Toplevel(self.root)
-        dialog.title("Calibrate Blur Detection")
+        dialog.title(DialogHelper.t("Calibrate Blur Detection"))
         dialog.geometry("600x500")
         dialog.grab_set()  # Make dialog modal
         
@@ -6545,14 +8435,14 @@ class ChipTrayExtractor:
         # Instructions
         instructions = ttk.Label(
             main_frame,
-            text="Select example sharp and blurry images to calibrate the blur detection threshold.",
+            text=DialogHelper.t("Select example sharp and blurry images to calibrate the blur detection threshold."),
             wraplength=580,
             justify=tk.LEFT
         )
         instructions.pack(fill=tk.X, pady=(0, 10))
         
         # Frame for sharp images
-        sharp_frame = ttk.LabelFrame(main_frame, text="Sharp (Good) Images", padding=10)
+        sharp_frame = ttk.LabelFrame(main_frame, text=DialogHelper.t("Sharp (Good) Images"), padding=10)
         sharp_frame.pack(fill=tk.X, pady=(0, 10))
         
         sharp_path_var = tk.StringVar()
@@ -6561,13 +8451,13 @@ class ChipTrayExtractor:
         
         sharp_button = ttk.Button(
             sharp_frame,
-            text="Browse",
+            text=DialogHelper.t("Browse"),
             command=lambda: self._select_calibration_images(sharp_path_var)
         )
         sharp_button.pack(side=tk.RIGHT)
         
         # Frame for blurry images
-        blurry_frame = ttk.LabelFrame(main_frame, text="Blurry (Poor) Images", padding=10)
+        blurry_frame = ttk.LabelFrame(main_frame, text=DialogHelper.t("Blurry (Poor) Images"), padding=10)
         blurry_frame.pack(fill=tk.X, pady=(0, 10))
         
         blurry_path_var = tk.StringVar()
@@ -6576,13 +8466,13 @@ class ChipTrayExtractor:
         
         blurry_button = ttk.Button(
             blurry_frame,
-            text="Browse",
+            text=DialogHelper.t("Browse"),
             command=lambda: self._select_calibration_images(blurry_path_var)
         )
         blurry_button.pack(side=tk.RIGHT)
         
         # Results frame
-        results_frame = ttk.LabelFrame(main_frame, text="Calibration Results", padding=10)
+        results_frame = ttk.LabelFrame(main_frame, text=DialogHelper.t("Calibration Results"), padding=10)
         results_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Results text widget
@@ -6606,7 +8496,7 @@ class ChipTrayExtractor:
             
             # Validate
             if not sharp_paths or not sharp_paths[0] or not blurry_paths or not blurry_paths[0]:
-                messagebox.showerror("Error", "Please select both sharp and blurry images")
+                DialogHelper.show_message(self.dialog, "Error", "Please select both sharp and blurry images", message_type="error")
                 return
             
             # Load images
@@ -6672,7 +8562,7 @@ class ChipTrayExtractor:
         
         calibrate_button = ttk.Button(
             button_frame,
-            text="Calibrate",
+            text=DialogHelper.t("Calibrate"),
             command=calibrate
         )
         calibrate_button.pack(side=tk.LEFT, padx=(0, 10))
@@ -6680,7 +8570,7 @@ class ChipTrayExtractor:
         # OK button
         ok_button = ttk.Button(
             button_frame,
-            text="OK",
+            text=DialogHelper.t("OK"),
             command=dialog.destroy
         )
         ok_button.pack(side=tk.RIGHT)
@@ -6703,8 +8593,6 @@ class ChipTrayExtractor:
         if file_paths:
             # Join paths with semicolons for display
             path_var.set(';'.join(file_paths))
-
-    
     
     def update_status(self, message: str, status_type: str = None) -> None:
         """
@@ -6740,11 +8628,70 @@ class ChipTrayExtractor:
             # Log error but don't raise it to avoid UI crashes
             logger.error(f"Error updating status: {str(e)}")
     
-    
+    def start_processing(self):
+        """Start processing in a separate thread."""
+        folder_path = self.folder_var.get()
+        if not folder_path:
+            DialogHelper.show_message(self.dialog, "Error", "Please select a folder", message_type="error")
+            return
+        
+        if not os.path.isdir(folder_path):
+            DialogHelper.show_message(self.dialog, "Error", "Selected path is not a valid folder", message_type="error")
+            return
+        
+        # Update config with current GUI settings
+        self.config['output_format'] = self.format_var.get()
+        self.config['save_debug_images'] = self.debug_var.get()
+        self.config['compartment_interval'] = self.interval_var.get()  # Use interval_var.get() instead of interval
+        
+        # Update blur detection settings
+        self.config['enable_blur_detection'] = self.blur_enable_var.get()
+        self.config['blur_threshold'] = self.blur_threshold_var.get()
+        self.config['blur_roi_ratio'] = self.blur_roi_var.get()
+        self.config['flag_blurry_images'] = self.flag_blurry_var.get()
+        self.config['save_blur_visualizations'] = self.save_blur_viz_var.get()
+        self.config['blurry_threshold_percentage'] = self.blur_threshold_pct_var.get()
+        
+        # Update OCR settings
+        self.config['enable_ocr'] = self.ocr_enable_var.get()
+        self.config['enable_prefix_validation'] = self.prefix_validation_var.get()
+        
+        # Parse the prefix string into a list
+        prefix_str = self.prefix_var.get()
+        if prefix_str:
+            # Split by comma and strip whitespace
+            prefixes = [p.strip().upper() for p in prefix_str.split(',')]
+            # Filter out any empty or invalid entries
+            self.config['valid_hole_prefixes'] = [p for p in prefixes if p and len(p) == 2 and p.isalpha()]
+        
+        # Update blur detector with new settings
+        self.blur_detector.threshold = self.config['blur_threshold']
+        self.blur_detector.roi_ratio = self.config['blur_roi_ratio']
+        
+        # Ensure TesseractManager has the updated config
+        self.tesseract_manager.config = self.config
+                
+        # Clear status
+        self.status_text.config(state=tk.NORMAL)
+        self.status_text.delete(1.0, tk.END)
+        self.status_text.config(state=tk.DISABLED)
+        
+        self.progress_var.set(0)
+        self.processing_complete = False
+        self.process_button.configure(state="disabled")
+        
+        # Start processing thread
+        processing_thread = threading.Thread(
+            target=self.process_folder_with_progress, 
+            args=(folder_path,)
+        )
+        processing_thread.daemon = True
+        processing_thread.start()
+        
+        self.update_status(f"Started processing folder: {folder_path}")
     
     def save_compartments(self, 
                         compartments: List[np.ndarray], 
-                        output_dir: str, 
                         base_filename: str,
                         metadata: Optional[Dict[str, Any]] = None) -> int:
         """
@@ -7027,68 +8974,6 @@ class ChipTrayExtractor:
             if hasattr(self, 'status_text') and self.status_text:
                 self.update_status(f"Selected folder: {folder_path}")
 
-    def start_processing(self):
-        """Start processing in a separate thread."""
-        folder_path = self.folder_var.get()
-        if not folder_path:
-            messagebox.showerror("Error", "Please select a folder")
-            return
-        
-        if not os.path.isdir(folder_path):
-            messagebox.showerror("Error", "Selected path is not a valid folder")
-            return
-        
-        # Update config with current GUI settings
-        self.config['output_format'] = self.format_var.get()
-        self.config['save_debug_images'] = self.debug_var.get()
-        self.config['compartment_interval'] = self.interval_var.get()  # Use interval_var.get() instead of interval
-        
-        # Update blur detection settings
-        self.config['enable_blur_detection'] = self.blur_enable_var.get()
-        self.config['blur_threshold'] = self.blur_threshold_var.get()
-        self.config['blur_roi_ratio'] = self.blur_roi_var.get()
-        self.config['flag_blurry_images'] = self.flag_blurry_var.get()
-        self.config['save_blur_visualizations'] = self.save_blur_viz_var.get()
-        self.config['blurry_threshold_percentage'] = self.blur_threshold_pct_var.get()
-        
-        # Update OCR settings
-        self.config['enable_ocr'] = self.ocr_enable_var.get()
-        self.config['enable_prefix_validation'] = self.prefix_validation_var.get()
-        
-        # Parse the prefix string into a list
-        prefix_str = self.prefix_var.get()
-        if prefix_str:
-            # Split by comma and strip whitespace
-            prefixes = [p.strip().upper() for p in prefix_str.split(',')]
-            # Filter out any empty or invalid entries
-            self.config['valid_hole_prefixes'] = [p for p in prefixes if p and len(p) == 2 and p.isalpha()]
-        
-        # Update blur detector with new settings
-        self.blur_detector.threshold = self.config['blur_threshold']
-        self.blur_detector.roi_ratio = self.config['blur_roi_ratio']
-        
-        # Ensure TesseractManager has the updated config
-        self.tesseract_manager.config = self.config
-                
-        # Clear status
-        self.status_text.config(state=tk.NORMAL)
-        self.status_text.delete(1.0, tk.END)
-        self.status_text.config(state=tk.DISABLED)
-        
-        self.progress_var.set(0)
-        self.processing_complete = False
-        self.process_button.config(state=tk.DISABLED)
-        
-        # Start processing thread
-        processing_thread = threading.Thread(
-            target=self.process_folder_with_progress, 
-            args=(folder_path,)
-        )
-        processing_thread.daemon = True
-        processing_thread.start()
-        
-        self.update_status(f"Started processing folder: {folder_path}")
-    
     
     def quit_app(self):
         """Close the application."""
@@ -7098,72 +8983,141 @@ class ChipTrayExtractor:
 class CollapsibleFrame(ttk.Frame):
     """A frame that can be expanded or collapsed with a toggle button."""
     
-    def __init__(self, parent, text="", expanded=False, **kwargs):
-        """
-        Initialize the collapsible frame.
-        
-        Args:
-            parent: Parent widget
-            text: Title text for the frame
-            expanded: Whether the frame is initially expanded
-            **kwargs: Additional arguments for ttk.Frame
-        """
+    def __init__(self, parent, text="", expanded=False, bg="#252526", fg="#e0e0e0", 
+                 title_bg="#252526", title_fg="#e0e0e0", content_bg="#1e1e1e", 
+                 border_color="#3f3f3f", arrow_color="#3a7ca5", **kwargs):
+        """Initialize the collapsible frame with theme support."""
         ttk.Frame.__init__(self, parent, **kwargs)
         
-        # Define colors
-        self.header_bg = "#EAEAEA"  # Light gray for header
-        self.header_fg = "#333333"  # Dark gray for text
+        # Save theme colors
+        self.bg = bg
+        self.fg = fg
+        self.title_bg = title_bg
+        self.title_fg = title_fg
+        self.content_bg = content_bg
+        self.border_color = border_color
+        self.arrow_color = arrow_color
         
-        # Create a header frame with background
-        self.header_frame = tk.Frame(self, bg=self.header_bg, pady=5, padx=5)
-        self.header_frame.pack(fill=tk.X, expand=False)
+        # Create the header with a border
+        self.header_frame = tk.Frame(
+            self, 
+            bg=self.title_bg,
+            highlightbackground=self.border_color,
+            highlightthickness=1
+        )
+        self.header_frame.pack(fill=tk.X)
         
-        # Create toggle button with arrow
+        # Create toggle button with arrow indicator
         self.toggle_button = tk.Label(
             self.header_frame, 
             text="▼ " if expanded else "▶ ",
             cursor="hand2",
-            bg=self.header_bg,
-            fg=self.header_fg,
-            font=("Arial", 10, "bold")
+            bg=self.title_bg,
+            fg=self.arrow_color,
+            font=("Arial", 11, "bold"),
+            padx=5,
+            pady=8
         )
-        self.toggle_button.pack(side=tk.LEFT, padx=(5, 0))
+        self.toggle_button.pack(side=tk.LEFT)
         self.toggle_button.bind("<Button-1>", self.toggle)
         
         # Create header label
         self.header_label = tk.Label(
             self.header_frame, 
-            text=text,
+            text=DialogHelper.t(text),
             cursor="hand2",
             font=("Arial", 11, "bold"),
-            bg=self.header_bg,
-            fg=self.header_fg
+            bg=self.title_bg,
+            fg=self.title_fg,
+            padx=5,
+            pady=8
         )
-        self.header_label.pack(side=tk.LEFT, padx=(5, 0))
+        self.header_label.pack(side=tk.LEFT, fill=tk.X, expand=True, anchor="w")
         self.header_label.bind("<Button-1>", self.toggle)
         
-        # Add a separator line
-        separator = ttk.Separator(self, orient=tk.HORIZONTAL)
-        separator.pack(fill=tk.X, padx=5, pady=(5, 0))
+        # Add separator line when collapsed
+        self.separator = ttk.Separator(self, orient="horizontal")
+        if not expanded:
+            self.separator.pack(fill=tk.X)
         
         # Content frame
-        self.content_frame = ttk.Frame(self, padding=(15, 5, 5, 5))
+        self.content_frame = tk.Frame(
+            self, 
+            bg=self.content_bg,
+            padx=15,
+            pady=15
+        )
         
         # Set initial state
         self.expanded = expanded
         if expanded:
-            self.content_frame.pack(fill=tk.X, expand=True, padx=5, pady=5)
+            self.content_frame.pack(fill=tk.BOTH, expand=True)
     
     def toggle(self, event=None):
         """Toggle the expanded/collapsed state."""
         if self.expanded:
             self.content_frame.pack_forget()
             self.toggle_button.configure(text="▶ ")
+            self.separator.pack(fill=tk.X)
             self.expanded = False
         else:
-            self.content_frame.pack(fill=tk.X, expand=True, padx=5, pady=5)
+            self.separator.pack_forget()
+            self.content_frame.pack(fill=tk.BOTH, expand=True)
             self.toggle_button.configure(text="▼ ")
-            self.expanded = True 
+            self.expanded = True
+    
+    def update_theme(self, bg, fg, title_bg, title_fg, content_bg, border_color, arrow_color):
+        """Update all theme-related colors for the frame and its children."""
+        # Update stored theme colors
+        self.bg = bg
+        self.fg = fg
+        self.title_bg = title_bg
+        self.title_fg = title_fg
+        self.content_bg = content_bg
+        self.border_color = border_color
+        self.arrow_color = arrow_color
+        
+        # Update header frame
+        self.header_frame.config(
+            bg=title_bg,
+            highlightbackground=border_color
+        )
+        
+        # Update toggle button
+        self.toggle_button.config(
+            bg=title_bg,
+            fg=arrow_color
+        )
+        
+        # Update header label
+        self.header_label.config(
+            bg=title_bg,
+            fg=title_fg
+        )
+        
+        # Update content frame
+        self.content_frame.config(
+            bg=content_bg
+        )
+        
+        # Update all children of content frame recursively
+        self._update_children_theme(self.content_frame, content_bg, fg)
+    
+    def _update_children_theme(self, parent, bg, fg):
+        """Recursively update theme for all child widgets."""
+        for child in parent.winfo_children():
+            try:
+                # Update based on widget type
+                if isinstance(child, (tk.Frame, tk.LabelFrame)):
+                    child.config(bg=bg)
+                    self._update_children_theme(child, bg, fg)
+                elif isinstance(child, (tk.Label, tk.Button, tk.Checkbutton)):
+                    if not isinstance(child, ColorButton):  # Skip custom colored buttons
+                        child.config(bg=bg, fg=fg)
+                # Skip ttk widgets as they're styled separately
+            except Exception:
+                # Skip widgets that don't support these options
+                pass
 
 
 class DrillholeTraceGenerator:
@@ -7380,14 +9334,14 @@ class DrillholeTraceGenerator:
             
         # Create a dialog
         dialog = tk.Toplevel(self.root)
-        dialog.title("Select CSV Columns")
+        dialog.title(DialogHelper.t("Select CSV Columns"))
         dialog.geometry("500x400")
         dialog.grab_set()  # Make dialog modal
         
         # Explanatory text
         header_label = ttk.Label(
             dialog, 
-            text="Select additional columns to display in the metadata box (max 5):",
+            text=DialogHelper.t("Select additional columns to display in the metadata box (max 5):"),
             wraplength=480,
             justify=tk.LEFT,
             padding=(10, 10)
@@ -7397,7 +9351,7 @@ class DrillholeTraceGenerator:
         # Required columns notice
         required_label = ttk.Label(
             dialog, 
-            text="Note: 'holeid', 'from', and 'to' are always included.",
+            text=DialogHelper.t("Note: 'holeid', 'from', and 'to' are always included."),
             font=("Arial", 9, "italic"),
             foreground="gray",
             padding=(10, 0, 10, 10)
@@ -7438,7 +9392,7 @@ class DrillholeTraceGenerator:
             
             checkbox = ttk.Checkbutton(
                 scrollable_frame,
-                text=column,
+                text=DialogHelper.t(column),
                 variable=var,
                 command=lambda: self._update_selection_count(selected_columns, selection_label)
             )
@@ -7447,7 +9401,7 @@ class DrillholeTraceGenerator:
         # Label to show how many columns are selected
         selection_label = ttk.Label(
             dialog,
-            text="0 columns selected (max 5)",
+            text=DialogHelper.t("0 columns selected (max 5)"),
             padding=(10, 10)
         )
         selection_label.pack()
@@ -7475,10 +9429,10 @@ class DrillholeTraceGenerator:
             dialog.destroy()
         
         # Add buttons
-        ok_button = ttk.Button(button_frame, text="OK", command=on_ok)
+        ok_button = ttk.Button(button_frame, text=DialogHelper.t("OK"), command=on_ok)
         ok_button.pack(side=tk.RIGHT, padx=(5, 0))
         
-        cancel_button = ttk.Button(button_frame, text="Cancel", command=on_cancel)
+        cancel_button = ttk.Button(button_frame, text=DialogHelper.t("Cancel"), command=on_cancel)
         cancel_button.pack(side=tk.RIGHT)
         
         # Wait for dialog to close
@@ -7489,132 +9443,10 @@ class DrillholeTraceGenerator:
         """Helper method to update the selection count label."""
         count = sum(var.get() for var in selected_columns.values())
         color = "red" if count > 5 else "black"
-        label_widget.config(text=f"{count} columns selected (max 5)", foreground=color)
-
-    def load_csv_data(self, csv_path: str, selected_columns: List[str]) -> pd.DataFrame:
-        """
-        Load CSV data for metadata integration.
-        
-        Args:
-            csv_path: Path to CSV file
-            selected_columns: Columns to include
-            
-        Returns:
-            DataFrame with the CSV data
-        """
-        try:
-            # Determine which columns to load - ensure required columns are included
-            required_columns = ['holeid', 'from', 'to']
-            columns_to_load = list(set(required_columns + selected_columns))
-            
-            # Load the CSV
-            df = pd.read_csv(csv_path, usecols=columns_to_load)
-            
-            # Normalize column names to lowercase for case-insensitive matching
-            df.columns = [col.lower() for col in df.columns]
-            
-            # Ensure numeric columns are properly typed
-            if 'from' in df.columns:
-                df['from'] = pd.to_numeric(df['from'], errors='coerce')
-            if 'to' in df.columns:
-                df['to'] = pd.to_numeric(df['to'], errors='coerce')
-                
-            # Drop rows with missing required values
-            df = df.dropna(subset=['holeid', 'from', 'to'])
-            
-            self.logger.info(f"Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Error loading CSV data: {str(e)}")
-            if self.progress_queue:
-                self.progress_queue.put((f"Error loading CSV data: {str(e)}", None))
-            return pd.DataFrame()
-
-    def get_csv_data_for_interval(self, 
-                                df: pd.DataFrame, 
-                                hole_id: str, 
-                                depth_from: float, 
-                                depth_to: float) -> Dict[str, Any]:
-        """
-        Get relevant CSV data for a specific interval.
-        
-        Args:
-            df: DataFrame with CSV data
-            hole_id: Hole ID
-            depth_from: Starting depth
-            depth_to: Ending depth
-            
-        Returns:
-            Dictionary with column values for the interval or empty dict if no match
-        """
-        if df.empty:
-            return {}
-            
-        try:
-            # Normalize hole ID for matching
-            hole_id_norm = hole_id.upper()
-            
-            # Filter for matching hole ID
-            hole_data = df[df['holeid'].str.upper() == hole_id_norm]
-            
-            if hole_data.empty:
-                return {}
-                
-            # Find intervals that overlap with our target interval
-            matching_intervals = hole_data[
-                ((hole_data['from'] <= depth_from) & (hole_data['to'] > depth_from)) |
-                ((hole_data['from'] >= depth_from) & (hole_data['from'] < depth_to)) |
-                ((hole_data['from'] <= depth_from) & (hole_data['to'] >= depth_to))
-            ].copy()  # Use .copy() to avoid the SettingWithCopyWarning
-            
-            if matching_intervals.empty:
-                # Return empty dict - no approximation
-                self.logger.info(f"No matching interval found for {hole_id} {depth_from}-{depth_to}m")
-                return {}
-                
-            # If multiple matches, take the one with the highest overlap
-            if len(matching_intervals) > 1:
-                # Calculate overlap for each interval
-                def calculate_overlap(row):
-                    overlap_start = max(row['from'], depth_from)
-                    overlap_end = min(row['to'], depth_to)
-                    return max(0, overlap_end - overlap_start)
-                    
-                matching_intervals.loc[:, 'overlap'] = matching_intervals.apply(calculate_overlap, axis=1)
-                best_match = matching_intervals.loc[matching_intervals['overlap'].idxmax()]
-                
-                # Convert the Series to a dictionary
-                result = best_match.to_dict()
-                
-                # Clean up the result
-                if 'overlap' in result:
-                    del result['overlap']
-                    
-                return result
-            else:
-                # Just one match, convert to dictionary
-                return matching_intervals.iloc[0].to_dict()
-                
-        except Exception as e:
-            self.logger.error(f"Error getting CSV data for interval: {str(e)}")
-            return {}
-
-            
-    def rotate_image(self, image: np.ndarray) -> np.ndarray:
-        """
-        Rotate an image 90 degrees clockwise.
-        
-        Args:
-            image: Input image
-            
-        Returns:
-            Rotated image
-        """
-        # Rotate 90 degrees clockwise
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        label_widget.config(text=self.t(f"{count} columns selected (max 5)"), foreground=color)
 
     
+
     def parse_filename_metadata(self, filename: str) -> Tuple[Optional[str], Optional[float], Optional[float]]:
         """
         Parse metadata from a filename based on various patterns including leading zeros.
@@ -7673,196 +9505,7 @@ class DrillholeTraceGenerator:
             self.logger.error(f"Error parsing filename metadata: {str(e)}")
             return None, None, None
 
-    def add_metadata_to_image(self, 
-                        image: np.ndarray, 
-                        hole_id: str, 
-                        depth_from: float, 
-                        depth_to: float,
-                        csv_data: Optional[Dict[str, Any]] = None,
-                        is_missing: bool = False) -> np.ndarray:
-        """
-        Add metadata box that overlaps with the left side of the image.
-        
-        Args:
-            image: Input image
-            hole_id: Hole ID
-            depth_from: Starting depth
-            depth_to: Ending depth
-            csv_data: Optional CSV data to include
-            is_missing: Whether this interval is missing (a gap)
-            
-        Returns:
-            Image with metadata box overlaid on the left side
-        """
-        # Get image dimensions
-        h, w = image.shape[:2]
-        
-        # Make a copy of the image to overlay metadata on
-        result_image = image.copy()
-        
-        # Determine metadata box width (25% of image width)
-        metadata_width = int(w * 0.25)
-        
-        # Create semi-transparent background for metadata
-        overlay = result_image.copy()
-        
-        # Create metadata section with semi-transparent background
-        if is_missing:
-            # Dark red background for missing intervals with alpha
-            background_color = (50, 50, 150)  # BGR dark red
-        else:
-            # Gray background for normal intervals with alpha
-            background_color = (200, 200, 200)  # BGR gray
-        
-        # Fill the metadata section with the background color
-        cv2.rectangle(
-            overlay,
-            (0, 0),
-            (metadata_width, h),
-            background_color,
-            -1
-        )
-        
-        # Add a separator line between metadata and rest of image
-        line_color = (100, 100, 100)  # Dark gray
-        line_thickness = 2
-        
-        cv2.line(
-            overlay,
-            (metadata_width, 0),
-            (metadata_width, h),
-            line_color,
-            line_thickness
-        )
-        
-        # Apply the overlay with transparency
-        alpha = 0.8  # 80% opacity
-        cv2.addWeighted(overlay, alpha, result_image, 1 - alpha, 0, result_image)
-        
-        # Add text to metadata section
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.5  # Smaller font
-        font_thickness = 1
-        padding = 10  # Padding from left edge
-        
-        # Use white text for missing intervals, black for normal
-        if is_missing:
-            text_color = (255, 255, 255)  # White for contrast with dark red
-        else:
-            text_color = (0, 0, 0)  # Black for normal intervals
-        
-        # Format depth as integers rather than floats
-        depth_from_int = int(depth_from)
-        depth_to_int = int(depth_to)
-        
-        # Create the title line (combined hole ID and interval with bold font)
-        title_text = f"{hole_id}_{depth_from_int}-{depth_to_int}m"
-        
-        # Prepare the list of text lines with appropriate spacing
-        text_lines = []
-        
-        # Add indicator for missing interval if needed
-        if is_missing:
-            text_lines.append(("** MISSING INTERVAL **", True))  # (text, is_bold)
-        
-        # Add the title as first line (or second if missing interval)
-        text_lines.append((title_text, True))  # Bold for title
-        
-        # Add blank line after title
-        text_lines.append(("", False))
-        
-        # Add CSV data if available
-        if csv_data and isinstance(csv_data, dict):
-            # Skip holeid, from, and to as they're already included above
-            skip_columns = ['holeid', 'from', 'to']
-            
-            # Process each column
-            for key, value in csv_data.items():
-                if key.lower() not in skip_columns:
-                    # Format numeric values appropriately
-                    if isinstance(value, (int, float)) and not pd.isna(value):
-                        if value == int(value):  # It's a whole number
-                            formatted_value = f"{int(value)}"
-                        else:
-                            formatted_value = f"{value:.2f}"
-                    elif pd.isna(value):
-                        formatted_value = "N/A"
-                    else:
-                        formatted_value = str(value)
-                    
-                    # Add to text lines with proper capitalization
-                    display_key = key.replace('_', ' ').capitalize() 
-                    text_lines.append((f"{display_key}: {formatted_value}", False))
-        
-        # Draw each line of text
-        y_offset = 30  # Start a bit down from the top
-        line_spacing = 20  # Increased spacing between lines
-        
-        for text, is_bold in text_lines:
-            if not text:  # Skip empty lines, just add space
-                y_offset += 10
-                continue
-            
-            # Handle text that's too long for the metadata box by wrapping
-            thickness = font_thickness + 1 if is_bold else font_thickness
-            available_width = metadata_width - (padding * 2)
-            
-            # Calculate if this text needs wrapping
-            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-            
-            if text_width > available_width:
-                # Text needs wrapping - split into words
-                words = text.split()
-                line = ""
-                for word in words:
-                    test_line = line + word + " "
-                    (test_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
-                    
-                    if test_width <= available_width:
-                        line = test_line
-                    else:
-                        # Draw current line and start a new one
-                        cv2.putText(
-                            result_image,
-                            line.strip(),
-                            (padding, y_offset),
-                            font,
-                            font_scale,
-                            text_color,
-                            thickness
-                        )
-                        y_offset += line_spacing
-                        line = word + " "
-                
-                # Draw the last line
-                if line:
-                    cv2.putText(
-                        result_image,
-                        line.strip(),
-                        (padding, y_offset),
-                        font,
-                        font_scale,
-                        text_color,
-                        thickness
-                    )
-            else:
-                # Text fits on one line
-                cv2.putText(
-                    result_image,
-                    text,
-                    (padding, y_offset),
-                    font,
-                    font_scale,
-                    text_color,
-                    thickness
-                )
-            
-            # Move to next line
-            y_offset += line_spacing
-        
-        return result_image
-    
-    
+
     def collect_compartment_images(self, compartment_dir: str) -> Dict[str, List[Tuple[str, float, float, str]]]:
         """
         Collect and organize compartment images by hole ID.
@@ -9191,7 +10834,6 @@ class BlurDetector:
             self.logger.error(f"Error during threshold calibration: {str(e)}")
             return self.threshold
 
-
 class FileManager:
     """
     Manages file operations for the Chip Tray Extractor.
@@ -9199,7 +10841,8 @@ class FileManager:
     Handles directory creation, file naming conventions, and saving operations.
 
     C:\\Excel Automation Local Outputs\\Chip Tray Photo Processor\\
-    ├── Program Resources
+    ├── Program Resources\\translations.csv
+    ├── Program Resources\\config.json
 
         C:\\Excel Automation Local Outputs\\Chip Tray Photo Processor\\Processed\
     ├── Blur Analysis\\[HoleID]\
