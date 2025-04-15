@@ -2210,8 +2210,6 @@ class GUIManager:
             elif isinstance(widget, tk.Canvas):
                 widget.config(bg=colors["background"])
                 
-            # TODO - Add collapsible frames here??
-
             # Menu handling
             if hasattr(widget, 'menuname'):
                 try:
@@ -3332,6 +3330,7 @@ class MetadataInputDialog:
                     if valid_prefixes:
                         prefix = hole_id[:2].upper()
                         if prefix not in valid_prefixes:
+                            # TODO - Update this message box with the DialogHelper method
                             if not messagebox.askyesno("Prefix Validation Warning", 
                                                     f"The prefix '{prefix}' is not in the list of valid prefixes: {', '.join(valid_prefixes)}.\n\nDo you want to continue anyway?",
                                                     icon='warning'):
@@ -3375,6 +3374,7 @@ class MetadataInputDialog:
                 
                 # Validate that depth intervals are sensible
                 if depth_to - depth_from > 40:
+                    # TODO - Update this message box with the DialogHelper method
                     if not messagebox.askyesno("Validation Warning", 
                                             f"Depth range ({depth_from}-{depth_to}) seems unusually large. Continue anyway?",
                                             icon='warning'):
@@ -3722,7 +3722,12 @@ class QAQCManager:
                         if os.path.isdir(os.path.join(temp_review_dir, d))]
             
             if not hole_dirs:
-                messagebox.showinfo("Review Complete", "No trays to review.")
+                DialogHelper.show_message(
+                    self.dialog, 
+                    self.t("Review Complete"), 
+                    self.t("No trays to review."), 
+                    message_type="info"
+                )
                 return
             
             # Process each hole's compartments
@@ -3764,12 +3769,8 @@ class QAQCManager:
                             if img is not None:
                                 compartments.append(img)
                                 temp_paths.append(file_path)
-                        else:
-                            # Create a blank image for missing compartments
-                            blank = np.ones((300, 300, 3), dtype=np.uint8) * 255
-                            cv2.putText(blank, "MISSING", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                            compartments.append(blank)
-                            temp_paths.append(None)
+                        # Just skip if the file doesn't exist - we don't need placeholders
+                        # The DrillholeTraceGenerator will handle missing compartments when creating traces
                     
                     # Create a tray entry and add to pending trays
                     tray_entry = {
@@ -3792,12 +3793,10 @@ class QAQCManager:
         # Process the first tray
         self._review_next_tray()
         
-        # Process the first tray
-        self._review_next_tray()
-        
     def _review_next_tray(self):
         """Display the next tray for review."""
         if not self.pending_trays:
+            # TODO - Update this message box with the DialogHelper method
             messagebox.showinfo("Review Complete", "All trays have been reviewed.")
             return
         
@@ -3913,15 +3912,12 @@ class QAQCManager:
         self.keep_original_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("Keep Original"), padding=10)
         self.keep_original_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
-        keep_original_btn = tk.Button(
+        # Use ModernButton instead of tk.Button
+        keep_original_btn = self.extractor.gui_manager.create_modern_button(
             self.keep_original_frame,
             text=DialogHelper.t("Keep Original"),
-            background="#ccffcc",  # Pale green
-            foreground="black",
-            font=("Arial", 12, "bold"),
-            command=self._set_keep_original_and_next,
-            height=3, 
-            width=12
+            color="#4a8259",  # Green color from theme
+            command=self._set_keep_original_and_next
         )
         keep_original_btn.pack(fill=tk.X, expand=True, padx=5, pady=20)
         
@@ -3933,52 +3929,36 @@ class QAQCManager:
         self.status_frame = ttk.LabelFrame(content_frame, text=DialogHelper.t("Compartment Status"), padding=10)
         self.status_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
         
-        # Add status buttons in a vertical arrangement
-        ok_button = tk.Button(
+        # Add status buttons using ModernButton
+        ok_button = self.extractor.gui_manager.create_modern_button(
             self.status_frame,
             text=DialogHelper.t("OK"),
-            background="green",
-            foreground="white",
-            font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_OK),
-            height=2, 
-            width=12
+            color="#4a8259",  # Green
+            command=lambda: self._set_status_and_next(self.STATUS_OK)
         )
         ok_button.pack(fill=tk.X, pady=5)
         
-        blurry_button = tk.Button(
+        blurry_button = self.extractor.gui_manager.create_modern_button(
             self.status_frame,
             text=DialogHelper.t("BLURRY"),
-            background="#ffcccc",  # Pale red
-            foreground="black",
-            font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_BLURRY),
-            height=2, 
-            width=12
+            color="#9e4a4a",  # Red
+            command=lambda: self._set_status_and_next(self.STATUS_BLURRY)
         )
         blurry_button.pack(fill=tk.X, pady=5)
         
-        damaged_button = tk.Button(
+        damaged_button = self.extractor.gui_manager.create_modern_button(
             self.status_frame,
             text=DialogHelper.t("DAMAGED"),
-            background="orange",
-            foreground="black",
-            font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_DAMAGED),
-            height=2, 
-            width=12
+            color="#d68c23",  # Orange
+            command=lambda: self._set_status_and_next(self.STATUS_DAMAGED)
         )
         damaged_button.pack(fill=tk.X, pady=5)
         
-        missing_button = tk.Button(
+        missing_button = self.extractor.gui_manager.create_modern_button(
             self.status_frame,
             text=DialogHelper.t("MISSING"),
-            background="black",
-            foreground="white",
-            font=("Arial", 12, "bold"),
-            command=lambda: self._set_status_and_next(self.STATUS_MISSING),
-            height=2, 
-            width=12
+            color="#333333",  # Dark gray/black
+            command=lambda: self._set_status_and_next(self.STATUS_MISSING)
         )
         missing_button.pack(fill=tk.X, pady=5)
         
@@ -3986,10 +3966,11 @@ class QAQCManager:
         nav_frame = ttk.Frame(main_frame)
         nav_frame.pack(fill=tk.X, pady=10)
         
-        # Previous button on the right side
-        self.prev_button = ttk.Button(
+        # Previous button using ModernButton
+        self.prev_button = self.extractor.gui_manager.create_modern_button(
             nav_frame,
             text=DialogHelper.t("← Previous"),
+            color="#3a7ca5",  # Blue
             command=self._on_previous
         )
         self.prev_button.pack(side=tk.LEFT, padx=5)
@@ -4001,22 +3982,6 @@ class QAQCManager:
         # It will be shown only if an existing image is found for the current compartment
         self.keep_original_frame.pack_forget()
         self.existing_frame.pack_forget()
-        
-    def _set_status_and_next(self, status):
-        """Set the status for the current compartment and move to the next one."""
-        # Save current status
-        self.current_tray['compartment_statuses'][self.current_compartment_index] = status
-        
-        # Check if we have more compartments to review
-        if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
-            # Move to next compartment
-            self.current_compartment_index += 1
-            self._show_current_compartment()
-        else:
-            # We've reached the last compartment, enable approve button
-            self.approve_button.config(state=tk.NORMAL)
-            # Optionally show a message
-            messagebox.showinfo("Review Complete", "All compartments have been reviewed. You can now approve or reject all.")
 
     def _show_current_compartment(self):
         """Display the current compartment with the specified layout."""
@@ -4035,7 +4000,7 @@ class QAQCManager:
         
         # Calculate depth for this compartment
         depth_from = self.current_tray['depth_from']
-        depth_increment = self.config['compartment_interval']
+        depth_increment = self.extractor.config['compartment_interval']
         comp_depth_from = depth_from + (self.current_compartment_index * depth_increment)
         comp_depth_to = comp_depth_from + depth_increment
         
@@ -4067,12 +4032,13 @@ class QAQCManager:
                 
                 # Resize for display if needed
                 h, w = display_img.shape[:2]
-                max_size = (600, 600)
-                if h > max_size[1] or w > max_size[0]:
-                    # Calculate scale to fit within max_size
-                    scale = min(max_size[0] / w, max_size[1] / h)
-                    new_size = (int(w * scale), int(h * scale))
-                    display_img = cv2.resize(display_img, new_size, interpolation=cv2.INTER_AREA)
+                # Calculate screen size and use 80% of height for maximum compartment height
+                screen_height = self.review_window.winfo_screenheight()
+                max_height = int(screen_height * 0.8)
+                if h > max_height:
+                    scale = max_height / h
+                    new_width = int(w * scale)
+                    display_img = cv2.resize(display_img, (new_width, max_height), interpolation=cv2.INTER_AREA)
                 
                 # Convert to PIL and then to Tkinter format
                 pil_img = Image.fromarray(display_img)
@@ -4107,13 +4073,22 @@ class QAQCManager:
             f"Compartment {self.current_compartment_index+1}/{total_compartments}"
         )
 
-    def _load_image_for_display(self, path, max_size=(400, 400)):
+    def _load_image_for_display(self, path, max_size=None):
         """Load an image and resize it for display."""
         try:
             from PIL import Image, ImageTk
             
             # Load image
             img = Image.open(path)
+            
+            # Calculate appropriate size - use 80% of screen height
+            if max_size is None:
+                screen_height = self.review_window.winfo_screenheight()
+                max_height = int(screen_height * 0.8)
+                # Keep aspect ratio but don't let width exceed 70% of screen width
+                screen_width = self.review_window.winfo_screenwidth()
+                max_width = int(screen_width * 0.7)
+                max_size = (max_width, max_height)
             
             # Resize for display while preserving aspect ratio
             img.thumbnail(max_size, Image.LANCZOS)
@@ -4142,6 +4117,7 @@ class QAQCManager:
         Returns:
             Path to existing image if found, None otherwise
         """
+        # TODO - I need to make sure that i'm checking the local folder AND the compartment images in the OneDrive folder.
         try:
             # Get the compartments directory
             compartments_dir = os.path.join(
@@ -4162,85 +4138,12 @@ class QAQCManager:
             self.logger.error(f"Error checking for existing compartment: {str(e)}")
             return None
     
-    def _on_status_change(self):
-        """Handle status change for the current compartment."""
-        # Save the status for the current compartment
-        self.current_tray['compartment_statuses'][self.current_compartment_index] = self.status_var.get()
-        
-        # Check if all compartments have been reviewed
-        all_reviewed = len(self.current_tray['compartment_statuses']) == len(self.current_tray['compartments'])
-        
-        # Enable the approve button if all compartments have been reviewed
-        if all_reviewed:
-            self.approve_button.config(state=tk.NORMAL)
-    
     def _on_previous(self):
         """Show the previous compartment."""
         # Move to previous compartment
         if self.current_compartment_index > 0:
             self.current_compartment_index -= 1
             self._show_current_compartment()
-
-    def _on_next(self):
-        """Show the next compartment."""
-        # Move to next compartment
-        if self.current_compartment_index < len(self.current_tray['compartments']) - 1:
-            self.current_compartment_index += 1
-            self._show_current_compartment()
-        else:
-            # We've reached the last compartment, enable the approve button
-            self.approve_button.config(state=tk.NORMAL)
-    
-    def _on_approve(self):
-        """Handle approve button click."""
-        if not self.current_tray:
-            return
-        
-        try:
-            # Save compartments using FileManager and record their status
-            self._save_approved_compartments()
-            
-            # Update Excel register with individual compartment entries
-            self._update_excel_register()
-            
-            # Move original file to Processed Originals
-            self._move_original_file(is_approved=True)
-            
-            # Close review window
-            self.review_window.destroy()
-            
-            # Process next tray
-            self._review_next_tray()
-            
-        except Exception as e:
-            self.logger.error(f"Error during approval: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            DialogHelper.show_message(self.dialog, "Error", f"An error occurred during approval: {str(e)}", message_type="error")
-    
-    def _on_reject(self):
-        """Handle reject button click."""
-        if not self.current_tray:
-            return
-        
-        try:
-            # Ask for confirmation
-            if not messagebox.askyesno("Confirm Rejection", 
-                                     "Are you sure you want to reject this tray? "
-                                     "The compartment images will be discarded."):
-                return
-            
-            # Move original file to Failed and Skipped Originals
-            self._move_original_file(is_approved=False)
-            
-            # Close review window
-            self.review_window.destroy()
-            
-            # Process next tray
-            self._review_next_tray()
-            
-        except Exception as e:
-            self.logger.error(f"Error during rejection: {str(e)}")
-            DialogHelper.show_message(self.dialog, "Error", f"An error occurred during rejection: {str(e)}", message_type="error")
     
     def _set_status_and_next(self, status):
         """Set the status for the current compartment and move to the next one."""
@@ -4253,10 +4156,16 @@ class QAQCManager:
             self.current_compartment_index += 1
             self._show_current_compartment()
         else:
-            # TODO - no need for an approve button or reject button in this workflow anymore - at the last compartment just show the message box 'Review Complete ... below'
-            self.approve_button.config(state=tk.NORMAL)
-            # Optionally show a message
-            messagebox.showinfo("Review Complete", "The files have been saved locally, and to the OneDrive folder")
+            # We've reached the last compartment - just show a completion message
+            DialogHelper.show_message(
+                self.root, 
+                DialogHelper.t("Review Complete"),
+                DialogHelper.t("The files have been saved locally, and to the OneDrive folder"),
+                message_type="info"
+            )
+            
+            # After user acknowledges, close the review window
+            self.review_window.destroy()
 
     def _set_keep_original_and_next(self):
         """Mark the current compartment to keep the original and move to next."""
@@ -4268,22 +4177,39 @@ class QAQCManager:
             self.current_compartment_index += 1
             self._show_current_compartment()
         else:
-            # We've reached the last compartment, enable the approve button
-            self.approve_button.config(state=tk.NORMAL)
-            messagebox.showinfo("Review Complete", "The files have been saved locally, and to the OneDrive folder")
-
+            # We've reached the last compartment, show completion message
+            DialogHelper.show_message(
+                self.root, 
+                DialogHelper.t("Review Complete"),
+                DialogHelper.t("The files have been saved locally, and to the OneDrive folder"),
+                message_type="info"
+            )
+            
+            # Close the review window
+            self.review_window.destroy()
+    
     def _on_review_window_close(self):
         """Handle review window close event."""
-        if messagebox.askyesno("Pause Review", "Do you want to pause the review process?\n\n"
-                            "You can resume it later by clicking 'Review Extracted Images'."):
+        if DialogHelper.confirm_dialog(
+            self.review_window,
+            DialogHelper.t("Pause Review"),
+            DialogHelper.t("Do you want to pause the review process?\n\nYou can resume it later by clicking 'Review Extracted Images'."),
+            yes_text=DialogHelper.t("Yes"),
+            no_text=DialogHelper.t("No")
+        ):
             # Just hide the window instead of destroying it
             self.review_window.withdraw()
         else:
             # If they don't want to pause, ask if they want to exit completely
-            if messagebox.askyesno("Confirm Exit", "Are you sure you want to exit the review process?\n\n"
-                                "All progress will be lost and remaining trays will be skipped."):
+            if DialogHelper.confirm_dialog(
+                self.review_window,
+                DialogHelper.t("Confirm Exit"),
+                DialogHelper.t("Are you sure you want to exit the review process?\n\nAll progress will be lost and remaining trays will be skipped."),
+                yes_text=DialogHelper.t("Yes"),
+                no_text=DialogHelper.t("No")
+            ):
                 self.review_window.destroy()
-                self.pending_trays = []
+                self.pending_trays = []  # Clear pending trays to skip them
     
     def _save_approved_compartments(self):
         """Save the approved compartment images using FileManager and upload to OneDrive."""
@@ -4321,11 +4247,74 @@ class QAQCManager:
                 # Check if we should keep the original for this compartment
                 if status == "KEEP_ORIGINAL":
                     self.logger.info(f"Skipping compartment {i+1}: keeping original image")
+                    
+                    # Verify if an original image exists in Chip Compartments
+                    original_path = self.file_manager.get_hole_dir("chip_compartments", hole_id)
+                    original_filename = f"{hole_id}_CC_{compartment_depth}.{self.extractor.config['output_format']}"
+                    full_original_path = os.path.join(original_path, original_filename)
+                    
+                    # Get the temp path for this compartment
+                    temp_path = None
+                    if i < len(self.current_tray['temp_paths']):
+                        temp_path = self.current_tray['temp_paths'][i]
+                    
+                    # If the temp file exists, move it to Failed and Skipped directory
+                    if temp_path and os.path.exists(temp_path):
+                        # Create target directory in Failed and Skipped
+                        failed_dir = self.file_manager.get_hole_dir("failed_originals", hole_id)
+                        
+                        # Create a unique filename with timestamp
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        failed_filename = f"{hole_id}_CC_{compartment_depth}_Kept_Original_{timestamp}.{self.extractor.config['output_format']}"
+                        failed_path = os.path.join(failed_dir, failed_filename)
+                        
+                        # Move the temp file to Failed and Skipped
+                        try:
+                            shutil.copy2(temp_path, failed_path)
+                            # Only remove after successful copy
+                            if os.path.exists(failed_path):
+                                os.remove(temp_path)
+                            self.logger.info(f"Moved skipped image to Failed and Skipped: {failed_path}")
+                        except Exception as e:
+                            self.logger.error(f"Error moving kept-original image: {str(e)}")
+                    
+                    # Skip saving the new image
                     continue
                     
-                # Don't save if marked as missing
+                # Don't save if marked as missing, but move the existing image to Failed and Skipped
                 if status == self.STATUS_MISSING:
-                    self.logger.info(f"Skipping compartment {i+1}: status={status}")
+                    self.logger.info(f"Compartment {i+1} marked as MISSING by user")
+                    
+                    # Get path from temp_paths if available
+                    temp_path = None
+                    if i < len(self.current_tray['temp_paths']):
+                        temp_path = self.current_tray['temp_paths'][i]
+                    
+                    # If there's an actual image file, move it to Failed and Skipped Originals
+                    if temp_path and os.path.exists(temp_path):
+                        # Get failed directory path
+                        failed_dir = self.file_manager.get_hole_dir("failed_originals", hole_id)
+                        
+                        # Create Chip Compartments subfolder
+                        failed_chip_dir = os.path.join(failed_dir, "Chip Compartments")
+                        os.makedirs(failed_chip_dir, exist_ok=True)
+                        
+                        # Create a timestamped filename
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        failed_filename = f"{hole_id}_CC_{compartment_depth}_Marked_Missing_{timestamp}.{self.extractor.config['output_format']}"
+                        failed_path = os.path.join(failed_chip_dir, failed_filename)
+                        
+                        # Move the image
+                        try:
+                            shutil.copy2(temp_path, failed_path)
+                            # Only remove original after successful copy
+                            if os.path.exists(failed_path):
+                                os.remove(temp_path)
+                            self.logger.info(f"Moved missing-marked compartment to Failed and Skipped: {failed_path}")
+                        except Exception as e:
+                            self.logger.error(f"Error moving missing-marked image: {str(e)}")
+                    
+                    # Skip saving this compartment to the regular location
                     continue
                     
                 # Get path from temp_paths if available
@@ -4428,6 +4417,7 @@ class QAQCManager:
             if not os.path.exists(hole_folder):
                 # Prompt with clear instructions
                 if self.root is not None:
+                    # TODO - Update this message box with the DialogHelper method
                     messagebox.showinfo(
                         "Subfolder Not Found", 
                         f"The subfolder for '{hole_id}' was not found in the Approved folder. "
@@ -4493,6 +4483,7 @@ class QAQCManager:
             if not os.path.exists(hole_folder):
                 # Prompt with clear instructions
                 if self.root is not None:
+                    # TODO - Update this message box with the DialogHelper method
                     messagebox.showinfo(
                         "Subfolder Not Found", 
                         f"The subfolder for '{hole_id}' was not found in the Processed Originals folder. "
@@ -4540,7 +4531,7 @@ class QAQCManager:
                 f"Could not copy original file to OneDrive: {str(e)}", message_type="error")
 
     def _update_excel_register(self):
-        """Update the Excel register with the approved compartments."""
+        """Update the Excel register with the approved compartments using temporary CSV files."""
         try:
             # Find the Excel register
             register_path = self.onedrive_manager.get_register_path()
@@ -4581,106 +4572,85 @@ class QAQCManager:
                     'Approved By': username
                 })
             
-            # First, try to process any pending entries from previous runs
-            self._process_pending_entries(register_path)
+            # Create a temporary CSV file with a unique name
+            temp_dir = os.path.join(self.file_manager.processed_dir, "Temp_Register")
+            os.makedirs(temp_dir, exist_ok=True)
             
-            # Try to update the Excel file with retry logic for file locking
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    # First try to open the workbook
-                    workbook = None
+            unique_id = f"{hole_id}_{int(depth_from)}-{int(depth_to)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            temp_csv_path = os.path.join(temp_dir, f"temp_register_{unique_id}.csv")
+            
+            # Save the entries to the temporary CSV
+            import pandas as pd
+            temp_df = pd.DataFrame(register_entries)
+            temp_df.to_csv(temp_csv_path, index=False)
+            self.logger.info(f"Saved temporary register entries to: {temp_csv_path}")
+            
+            # Try to update the main Excel register
+            try:
+                # Try to open the Excel file
+                if os.path.exists(register_path):
+                    # Load the existing register
                     try:
-                        from openpyxl import load_workbook
-                        workbook = load_workbook(register_path)
-                    except Exception as open_error:
-                        self.logger.warning(f"Error opening Excel file (attempt {attempt+1}): {str(open_error)}")
-                        
-                        # Check if it's a file access error and try to close Excel via system command
-                        if "Permission denied" in str(open_error) or "being used by another process" in str(open_error):
-                            self._try_close_excel()
-                            # Wait a moment before trying again
-                            import time
-                            time.sleep(2)
-                            continue
+                        register_df = pd.read_excel(register_path, sheet_name='Processed Images')
+                    except Exception as e:
+                        self.logger.warning(f"Could not read Excel register, will create new: {e}")
+                        register_df = pd.DataFrame(columns=[
+                            'HoleID', 'From', 'To', 'Status', 'Approved Date', 'Approved By'
+                        ])
+                else:
+                    # Create a new DataFrame with the required columns
+                    register_df = pd.DataFrame(columns=[
+                        'HoleID', 'From', 'To', 'Status', 'Approved Date', 'Approved By'
+                    ])
+                
+                # Check for existing entries for the same compartments and update or append
+                for entry in register_entries:
+                    # Check if this compartment already exists in the register
+                    existing_match = register_df[
+                        (register_df['HoleID'] == entry['HoleID']) &
+                        (register_df['From'] == entry['From']) &
+                        (register_df['To'] == entry['To'])
+                    ]
                     
-                    if workbook is None:
-                        # Try with pandas as a fallback
-                        import pandas as pd
-                        
-                        # Check if file exists
-                        if not os.path.exists(register_path):
-                            # Create a new DataFrame with the required columns
-                            df = pd.DataFrame(columns=[
-                                'HoleID', 'From', 'To', 'Status', 'Approved Date', 'Approved By'
-                            ])
-                        else:
-                            # Read existing data
-                            df = pd.read_excel(register_path, sheet_name='Processed Images')
-                        
-                        # Append new data
-                        for entry in register_entries:
-                            df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
-                        
-                        # Save to Excel
-                        with pd.ExcelWriter(register_path, engine='openpyxl') as writer:
-                            df.to_excel(writer, sheet_name='Processed Images', index=False)
-                            
-                        self.logger.info(f"Updated Excel register using pandas: {register_path}")
-                        break
-                    
-                    # Check if "Processed Images" sheet exists
-                    if "Processed Images" not in workbook.sheetnames:
-                        # Create the sheet
-                        sheet = workbook.create_sheet("Processed Images")
-                        
-                        # Add header row
-                        headers = ['HoleID', 'From', 'To', 'Status', 'Approved Date', 'Approved By']
-                        for col, header in enumerate(headers, start=1):
-                            sheet.cell(row=1, column=col).value = header
+                    if not existing_match.empty:
+                        # Update existing entry unless the new status is 'MISSING' and the old isn't
+                        if not (entry['Status'] == self.STATUS_MISSING and 
+                            existing_match.iloc[0]['Status'] != self.STATUS_MISSING):
+                            # Get index of the existing entry
+                            index = existing_match.index[0]
+                            # Update the values
+                            register_df.loc[index, 'Status'] = entry['Status']
+                            register_df.loc[index, 'Approved Date'] = entry['Approved Date']
+                            register_df.loc[index, 'Approved By'] = entry['Approved By']
                     else:
-                        # Get sheet
-                        sheet = workbook["Processed Images"]
-                    
-                    # Find next empty row
-                    next_row = sheet.max_row + 1
-                    if sheet.cell(row=1, column=1).value is None:  # Empty sheet
-                        next_row = 1
-                        # Add header row
-                        headers = ['HoleID', 'From', 'To', 'Status', 'Approved Date', 'Approved By']
-                        for col, header in enumerate(headers, start=1):
-                            sheet.cell(row=1, column=col).value = header
-                        next_row = 2
-                    
-                    # Add each entry to sheet
-                    for entry in register_entries:
-                        sheet.cell(row=next_row, column=1).value = entry['HoleID']
-                        sheet.cell(row=next_row, column=2).value = entry['From']
-                        sheet.cell(row=next_row, column=3).value = entry['To']
-                        sheet.cell(row=next_row, column=4).value = entry['Status']
-                        sheet.cell(row=next_row, column=5).value = entry['Approved Date']
-                        sheet.cell(row=next_row, column=6).value = entry['Approved By']
-                        next_row += 1
-                    
-                    # Save workbook
-                    workbook.save(register_path)
+                        # Append new entry
+                        register_df = pd.concat([register_df, pd.DataFrame([entry])], ignore_index=True)
+                
+                # Create a backup of the original Excel file if it exists
+                if os.path.exists(register_path):
+                    backup_path = f"{register_path}.backup"
+                    try:
+                        shutil.copy2(register_path, backup_path)
+                        self.logger.info(f"Created backup of register: {backup_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Could not create backup of register: {e}")
+                
+                # Now save the updated register
+                try:
+                    with pd.ExcelWriter(register_path, engine='openpyxl') as writer:
+                        register_df.to_excel(writer, sheet_name='Processed Images', index=False)
                     self.logger.info(f"Updated Excel register: {register_path}")
-                    break
                     
-                except Exception as e:
-                    self.logger.error(f"Error updating Excel register (attempt {attempt+1}): {str(e)}")
-                    if attempt == max_retries - 1:
-                        # Last attempt failed, save entries to local file
-                        self._save_entries_to_local_file(register_entries)
-                        
-                        messagebox.showwarning(
-                            "Excel Register Update", 
-                            "Could not update the Excel register on OneDrive. Entries have been saved locally and will be applied during the next run."
-                        )
-                    else:
-                        # Wait before retrying
-                        import time
-                        time.sleep(2)
+                    # If successful, remove the temporary CSV
+                    os.remove(temp_csv_path)
+                    
+                except Exception as save_error:
+                    self.logger.error(f"Could not save to Excel register: {save_error}")
+                    # Keep the temporary CSV for later processing
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing Excel register: {e}")
+                # Keep the temporary CSV for later processing
                 
         except Exception as e:
             self.logger.error(f"Error in Excel register update: {str(e)}")
@@ -4689,36 +4659,13 @@ class QAQCManager:
             # Save entries to local file as a fallback
             self._save_entries_to_local_file(register_entries)
             
-            messagebox.showwarning(
-                "Excel Register Update", 
-                f"An error occurred while updating the Excel register. Entries have been saved locally and will be applied during the next run."
+            DialogHelper.show_message(
+                self.review_window, 
+                DialogHelper.t("Excel Register Update"),
+                DialogHelper.t("An error occurred while updating the Excel register. Entries have been saved locally and will be applied during the next run."),
+                message_type="warning"
             )
-    
-    def _try_close_excel(self):
-        """Attempt to close Excel processes that might be locking the file."""
-        try:
-            import platform
-            import subprocess
             
-            system = platform.system()
-            if system == "Windows":
-                # Try to close Excel using taskkill
-                subprocess.run(["taskkill", "/f", "/im", "excel.exe"], 
-                            stdout=subprocess.PIPE, 
-                            stderr=subprocess.PIPE,
-                            shell=True)
-                self.logger.info("Attempted to close Excel processes")
-            elif system == "Darwin":  # macOS
-                subprocess.run(["pkill", "-x", "Microsoft Excel"], 
-                            stdout=subprocess.PIPE, 
-                            stderr=subprocess.PIPE)
-                self.logger.info("Attempted to close Excel processes on macOS")
-            else:
-                self.logger.info(f"No Excel termination support for {system}")
-                
-        except Exception as e:
-            self.logger.error(f"Error trying to close Excel: {str(e)}")
-
     def _save_entries_to_local_file(self, entries=None):
         """
         Save register entries to a local CSV file when OneDrive update fails.
@@ -4877,6 +4824,7 @@ class OneDrivePathManager:
                 return self._processed_originals_path
             elif self.root is not None:
                 # Prompt user if the custom path doesn't exist
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno(
                     "Path Not Found",
                     f"The custom Processed Originals path does not exist: {self._processed_originals_path}\n\n"
@@ -4905,6 +4853,7 @@ class OneDrivePathManager:
             return processed_folder
         
         # If not found, prompt the user if we have a root
+        # TODO - Update this message box with the DialogHelper method
         if self.root is not None:
             if messagebox.askyesno(
                 "Folder Not Found",
@@ -4952,6 +4901,7 @@ class OneDrivePathManager:
         # If not found automatically, prompt the user
         if self.root is not None:
             try:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showinfo(
                     "Select Folder", 
                     "Please select the 'Chip Tray Photos' folder in OneDrive"
@@ -4966,6 +4916,7 @@ class OneDrivePathManager:
                     # Verify selected folder name
                     folder_name = os.path.basename(selected_path)
                     if folder_name != "Chip Tray Photos":
+                        # TODO - Update this message box with the DialogHelper method
                         if not messagebox.askyesno(
                             "Folder Name Mismatch",
                             f"Selected folder name '{folder_name}' doesn't match 'Chip Tray Photos'. Proceed anyway?"
@@ -5001,6 +4952,7 @@ class OneDrivePathManager:
                 return self._approved_folder_path
             elif self.root is not None:
                 # Prompt user if the custom path doesn't exist
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno(
                     "Path Not Found",
                     f"The custom Approved Images folder path does not exist: {self._approved_folder_path}\n\n"
@@ -5031,6 +4983,7 @@ class OneDrivePathManager:
         
         # If not found, prompt the user if we have a root
         if self.root is not None:
+            # TODO - Update this message box with the DialogHelper method
             if messagebox.askyesno(
                 "Folder Not Found",
                 "The 'Approved Compartment Images' folder was not found.\n\nWould you like to browse for it?",
@@ -5061,6 +5014,7 @@ class OneDrivePathManager:
                 return self._register_path
             elif self.root is not None:
                 # Prompt user if the custom path doesn't exist
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno(
                     "Path Not Found",
                     f"The custom Excel register path does not exist: {self._register_path}\n\n"
@@ -5121,6 +5075,7 @@ class OneDrivePathManager:
                 return self._drill_traces_path
             elif self.root is not None:
                 # Prompt user if the custom path doesn't exist
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno(
                     "Path Not Found",
                     f"The custom Drill Traces folder path does not exist: {self._drill_traces_path}\n\n"
@@ -5150,6 +5105,7 @@ class OneDrivePathManager:
         
         # If not found, prompt the user if we have a root
         if self.root is not None:
+            # TODO - Update this message box with the DialogHelper method
             if messagebox.askyesno(
                 "Folder Not Found",
                 "The 'Drill Traces' folder was not found.\n\nWould you like to browse for it?",
@@ -7926,10 +7882,12 @@ class ChipTrayExtractor:
             holes_to_process = [hole for hole in hole_dirs if hole not in existing_traces]
             
             if not holes_to_process:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showinfo("Info", "All holes already have trace images.")
                 return
             
             # Ask user for confirmation
+            # TODO - Update this message box with the DialogHelper method
             if not messagebox.askyesno("Confirm", f"Found {len(holes_to_process)} holes without trace images. Process them all?"):
                 return
             
@@ -7942,9 +7900,11 @@ class ChipTrayExtractor:
             )
 
             if generated_paths:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showinfo("Success", f"Generated {len(generated_paths)} drillhole trace images.")
                 
                 # Ask if the user wants to open the directory
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno("Open Directory", "Would you like to open the directory containing the trace images?"):
                     # Get the directory from the first generated path
                     if os.path.isfile(generated_paths[0]):
@@ -7961,8 +7921,10 @@ class ChipTrayExtractor:
                         else:  # Linux
                             subprocess.Popen(["xdg-open", trace_dir])
                     except Exception as e:
+                        # TODO - Update this message box with the DialogHelper method
                         messagebox.showwarning("Error", f"Could not open directory: {str(e)}")
             else:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showwarning("No Output", "No drillhole trace images were generated.")
         except Exception as e:
             DialogHelper.show_message(self.dialog, "Error", f"An error occurred: {str(e)}", message_type="error")
@@ -8094,6 +8056,7 @@ class ChipTrayExtractor:
             
             # If the user cancels, confirm cancellation
             if result is None:
+                # TODO - Update this message box with the DialogHelper method
                 confirm = messagebox.askyesno(
                     "Confirm Cancellation",
                     "Are you sure you want to skip processing this image?\n\n"
@@ -9056,6 +9019,7 @@ class ChipTrayExtractor:
             
             # Show confirmation to the user
             if hasattr(self, 'root') and self.root:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showinfo(
                     self.t("Language Changed"),
                     self.t("Application language has been changed to {language}.").format(
@@ -9081,6 +9045,7 @@ class ChipTrayExtractor:
             "GitHub: https://github.com/Dragoarms/Geological-Chip-Tray-Compartment-Extractor"
         )
         
+        # TODO - Update this message box with the DialogHelper method
         messagebox.showinfo("About Chip Tray Extractor", about_text, parent=self.root)
 
     def _check_updates_at_startup(self):
@@ -9092,6 +9057,7 @@ class ChipTrayExtractor:
             result = self.update_checker.compare_versions()
 
             if result["update_available"]:
+                # TODO - Update this message box with the DialogHelper method
                 if messagebox.askyesno(
                     "Update Available",
                     f"A new version is available:\n{result['github_version']}.\n\nDownload and restart?"
@@ -9206,6 +9172,7 @@ class ChipTrayExtractor:
         self.onedrive_manager._register_path = self.register_path_var.get() if self.register_path_var.get() else None
         
         # Show confirmation message
+        # TODO - Update this message box with the DialogHelper method
         messagebox.showinfo(
             "OneDrive Paths Updated", 
             "OneDrive path settings have been updated."
@@ -9245,6 +9212,7 @@ class ChipTrayExtractor:
             "- Blur Analysis: HoleID_[number]_blur_analysis.jpg\n"
             "- Originals: HoleID_From-To_Original.ext"
         )
+        # TODO - Update this message box with the DialogHelper method
         messagebox.showinfo("File Structure Information", info_message)
 
     def _show_blur_help(self):
@@ -9265,6 +9233,7 @@ class ChipTrayExtractor:
     - Calibration: Use the calibration tool to automatically set an optimal threshold based on example
     sharp and blurry images.
     """
+        # TODO - Update this message box with the DialogHelper method
         messagebox.showinfo("Blur Detection Help", help_text)
 
     def _show_blur_calibration_dialog(self):
@@ -9706,6 +9675,7 @@ class ChipTrayExtractor:
             # Prompt to start QAQC review if there are successfully processed images
             if successful > 0 and hasattr(self, 'root') and self.root is not None:
                 def show_qaqc_prompt():
+                    # TODO - Update this message box with the DialogHelper method
                     start_review = messagebox.askyesno(
                         "Processing Complete",
                         f"Successfully processed {successful} images.\n\nWould you like to start the QAQC review process now?",
@@ -10158,6 +10128,7 @@ class DrillholeTraceGenerator:
             nonlocal result
             result = [col for col, var in selected_columns.items() if var.get()]
             if len(result) > 5:
+                # TODO - Update this message box with the DialogHelper method
                 messagebox.showwarning("Too Many Columns", "Please select at most 5 columns.")
                 return
             dialog.destroy()
